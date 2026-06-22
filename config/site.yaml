@@ -1,0 +1,28 @@
+title: Tintero
+description: A minimal blog built with Next.js, Tailwind CSS, and markdown content.
+baseUrl: http://localhost:3000
+language: es
+author:
+  name: Tintero Author
+  email: author@tintero.dev
+nav:
+  - label: Home
+    href: /
+  - label: Blog
+    href: /blog
+social:
+  github: tintero
+  twitter: tintero
+comments:
+  enabled: true
+  moderation: manual
+  close_after_days: 0
+  max_depth: 0
+  per_page: 0
+timezone: UTC
+dateFormat: long
+reading:
+  homepage: hero-recent
+  posts_per_page: 10
+writing:
+  default_post_status: draft

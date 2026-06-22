@@ -1,0 +1,39 @@
+import { t } from "@/lib/i18n";
+import { Button } from "@/app/components/ui/button";
+
+interface UsersSearchFormProps {
+  q: string;
+  loc: string;
+}
+
+/**
+ * GET search form for the admin Users list.
+ * Server component — no "use client".
+ * Mirrors pages-search-form.tsx.
+ *
+ * No page hidden input => form submit always resets to page 1.
+ */
+export function UsersSearchForm({ q, loc }: UsersSearchFormProps) {
+  return (
+    <form
+      method="GET"
+      action="/admin/users"
+      role="search"
+      className="flex items-center gap-2 mb-4"
+    >
+      <label htmlFor="users-search" className="sr-only">
+        {t(loc, "admin.users.searchUsers")}
+      </label>
+      <input
+        id="users-search"
+        type="search"
+        name="q"
+        defaultValue={q}
+        placeholder={t(loc, "admin.users.searchUsersPlaceholder")}
+        autoComplete="off"
+        className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-1.5 text-sm text-zinc-900 dark:text-zinc-50 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-500 dark:focus:ring-zinc-400"
+      />
+      <Button type="submit" variant="secondary">{t(loc, "common.search")}</Button>
+    </form>
+  );
+}

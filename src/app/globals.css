@@ -1,0 +1,119 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@source "../../node_modules/calamo/src/**/*.tsx";
+
+/* Dark variant — authoritative-theme aware.
+   By default `dark:` follows the visitor's OS (prefers-color-scheme). When the
+   operator picks a page background in the Customizer, the layout stamps
+   <html data-color-scheme="light|dark"> (derived from that background); the site
+   then adopts that scheme for EVERY visitor, overriding their OS preference so
+   the chosen colors stay readable. `:where()` keeps specificity identical to
+   Tailwind's stock dark variant. */
+@custom-variant dark {
+  /* Operator forced a scheme → honor "dark" regardless of OS. */
+  &:where(:root[data-color-scheme="dark"] *) {
+    @slot;
+  }
+  /* No forced scheme → fall back to the OS preference. */
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-color-scheme]) *) {
+      @slot;
+    }
+  }
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* Theme-customization tokens — overridden by the injected :root{} from site.yaml.
+     Each has a sane default so utilities resolve and the build works with NO theme set. */
+  --color-primary: var(--color-primary, #171717);
+  --color-accent: var(--color-accent, #3b82f6);
+  --color-header-bg: var(--color-header-bg, #ffffff);
+  --color-text: var(--color-text, var(--foreground));
+  --color-bg: var(--color-bg, var(--background));
+}
+
+/* Base light/dark surface vars. A forced scheme (data-color-scheme, set when the
+   operator picks a page background) wins over the visitor's OS preference; with
+   no forced scheme the OS preference applies exactly as before. */
+:root[data-color-scheme="dark"] {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  color-scheme: dark;
+}
+:root[data-color-scheme="light"] {
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-color-scheme]) {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+    /* Match the explicit data-color-scheme="dark" branch so native form controls
+       (checkboxes, selects, scrollbars) follow the OS in "System" mode — without
+       this, system-dark left checkboxes rendering in the light UA scheme. */
+    color-scheme: dark;
+  }
+}
+
+body {
+  /* Page background & text consume the customizer tokens when set, falling back
+     to the base light/dark vars so an un-themed site is byte-identical. These
+     tokens are emitted into :root{} by buildThemeCssVars only when the operator
+     picks a color (Appearance → Colors → Page background / Text color). */
+  background: var(--color-bg, var(--background));
+  color: var(--color-text, var(--foreground));
+  font-family: var(--font-body, Arial, Helvetica, sans-serif);
+  /* Background image: consumed when --bg-image is injected by buildThemeCssVars.
+     When --bg-image is not set the var resolves to the guaranteed-invalid value
+     (browsers treat it as initial = none), so no visual change on un-themed sites. */
+  background-image: var(--bg-image);
+  background-size: cover;
+  background-position: center;
+}
+
+/* Heading font: distinct face when --font-heading is injected from site.yaml.
+   Unset → inherit → body's var(--font-body, Arial…) → byte-identical to today.
+   Specificity 0,0,1; @tailwindcss/typography sets no font-family on .prose
+   headings, so this also styles .prose h1-h6 with no conflict. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-heading, inherit);
+}
+
+/* Broken wikilink — a [[target]] with no matching note (Obsidian-style).
+   Resolved wikilinks are plain <a> tags and inherit the normal link styles. */
+.wikilink-broken {
+  color: #ef4444;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+/* Honeypot field — visually hidden but reachable by bots.
+   Must NOT use display:none or visibility:hidden (bots skip those).
+   clip-path removes it from visual rendering while keeping it in the DOM.
+   Satisfies: REQ-SPAM-01, REQ-FORM-04. */
+.comment-honeypot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

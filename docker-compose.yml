@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: tintero
+      POSTGRES_PASSWORD: tintero
+      POSTGRES_DB: tintero
+    ports:
+      - "5432:5432"
+    volumes:
+      - tintero_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  tintero_postgres_data:
+  # Forward-provisioned: when an app service is added, mount as:
+  #   volumes: [tintero_uploads:/app/uploads]
+  tintero_uploads:
