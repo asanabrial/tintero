@@ -1,0 +1,10 @@
+# Code owners for tintero.
+#
+# The repository admin (@asanabrial) owns every path. Combined with the
+# "require code owner review" rule on the protected `main` branch, this makes
+# the admin the mandatory approver for any pull request opened by a non-admin
+# collaborator — a non-admin's PR cannot merge until the admin approves it.
+#
+# The admin bypasses the ruleset entirely, so this requirement never blocks the
+# admin's own work.
+* @asanabrial
