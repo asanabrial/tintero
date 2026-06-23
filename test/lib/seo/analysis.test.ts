@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { analyzeSeo, overallScore, type SeoInput } from "@/lib/seo/analysis";
+import {
+  analyzeSeo,
+  overallScore,
+  extractContentFeaturesFromHtml,
+  extractContentFeaturesFromMarkdown,
+  type SeoInput,
+} from "@/lib/seo/analysis";
 
 // A reasonable baseline input — a well-optimized post for the keyphrase
 // "hexagonal architecture".
@@ -139,5 +145,115 @@ describe("overallScore", () => {
 
   test("empty list → bad (nothing assessed)", () => {
     expect(overallScore([])).toBe("bad");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Content feature extraction
+// ---------------------------------------------------------------------------
+
+describe("extractContentFeaturesFromHtml", () => {
+  test("pulls subheadings (H2–H6), image alts, and link count", () => {
+    const html =
+      "<h1>Title</h1><h2>First Section</h2><p>Intro</p>" +
+      '<img src="/a.png" alt="A cat">' +
+      '<h3>Deeper</h3><img src="/b.png">' +
+      '<a href="/internal">x</a><a href="https://ext.com">y</a>';
+    const f = extractContentFeaturesFromHtml(html);
+    expect(f.subheadings).toEqual(["First Section", "Deeper"]);
+    expect(f.imageAlts).toEqual(["A cat", ""]);
+    expect(f.linkCount).toBe(2);
+  });
+});
+
+describe("extractContentFeaturesFromMarkdown", () => {
+  test("pulls ATX subheadings, image alts, and counts links but not images", () => {
+    const md =
+      "# Title\n## First Section\nIntro text\n" +
+      "![A cat](/a.png)\n### Deeper\n" +
+      "[a link](/internal) and [another](https://ext.com)\n";
+    const f = extractContentFeaturesFromMarkdown(md);
+    expect(f.subheadings).toEqual(["First Section", "Deeper"]);
+    expect(f.imageAlts).toEqual(["A cat"]);
+    expect(f.linkCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Content-structure checks (only fire when `content` is supplied)
+// ---------------------------------------------------------------------------
+
+describe("analyzeSeo — content checks", () => {
+  function inputWith(content: SeoInput["content"]): SeoInput {
+    return {
+      seoTitle: "Hexagonal architecture guide",
+      metaDescription: "About hexagonal architecture.",
+      slug: "hexagonal-architecture",
+      bodyText: "Hexagonal architecture content.",
+      focusKeyphrase: "hexagonal architecture",
+      content,
+    };
+  }
+
+  test("no content field → the content checks are absent", () => {
+    const ids = analyzeSeo(inputWith(undefined)).map((a) => a.id);
+    expect(ids).not.toContain("imagePresence");
+    expect(ids).not.toContain("keyphraseInSubheadings");
+    expect(ids).not.toContain("linkPresence");
+  });
+
+  test("keyphrase in a subheading → good; absent → ok", () => {
+    const good = analyzeSeo(
+      inputWith({ subheadings: ["Intro to Hexagonal Architecture"], imageAlts: [], linkCount: 0 })
+    ).find((a) => a.id === "keyphraseInSubheadings");
+    expect(good?.score).toBe("good");
+    const ok = analyzeSeo(
+      inputWith({ subheadings: ["Something else"], imageAlts: [], linkCount: 0 })
+    ).find((a) => a.id === "keyphraseInSubheadings");
+    expect(ok?.score).toBe("ok");
+  });
+
+  test("subheading check is skipped when there are no subheadings", () => {
+    const ids = analyzeSeo(
+      inputWith({ subheadings: [], imageAlts: ["x"], linkCount: 1 })
+    ).map((a) => a.id);
+    expect(ids).not.toContain("keyphraseInSubheadings");
+  });
+
+  test("image presence: good with images, bad without", () => {
+    expect(
+      analyzeSeo(inputWith({ subheadings: [], imageAlts: ["x"], linkCount: 0 })).find(
+        (a) => a.id === "imagePresence"
+      )?.score
+    ).toBe("good");
+    expect(
+      analyzeSeo(inputWith({ subheadings: [], imageAlts: [], linkCount: 0 })).find(
+        (a) => a.id === "imagePresence"
+      )?.score
+    ).toBe("bad");
+  });
+
+  test("keyphrase in image alt → good; only evaluated when images exist", () => {
+    const good = analyzeSeo(
+      inputWith({ subheadings: [], imageAlts: ["a hexagonal architecture diagram"], linkCount: 0 })
+    ).find((a) => a.id === "keyphraseInImageAlt");
+    expect(good?.score).toBe("good");
+    const noImages = analyzeSeo(
+      inputWith({ subheadings: [], imageAlts: [], linkCount: 0 })
+    ).map((a) => a.id);
+    expect(noImages).not.toContain("keyphraseInImageAlt");
+  });
+
+  test("link presence: good with links, ok without", () => {
+    expect(
+      analyzeSeo(inputWith({ subheadings: [], imageAlts: [], linkCount: 3 })).find(
+        (a) => a.id === "linkPresence"
+      )?.score
+    ).toBe("good");
+    expect(
+      analyzeSeo(inputWith({ subheadings: [], imageAlts: [], linkCount: 0 })).find(
+        (a) => a.id === "linkPresence"
+      )?.score
+    ).toBe("ok");
   });
 });

@@ -10,6 +10,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: t(config.language, "common.authors"),
     robots: { index: true, follow: true },
+    alternates: { canonical: "/blog/author" },
   };
 }
 

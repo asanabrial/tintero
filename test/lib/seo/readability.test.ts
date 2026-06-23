@@ -69,3 +69,19 @@ describe("analyzeReadability", () => {
     expect(result[0].score).toBe("bad");
   });
 });
+
+describe("analyzeReadability — consecutive sentence openings", () => {
+  test("3+ sentences starting with the same word → ok", () => {
+    const a = analyzeReadability("The cat ran. The dog ran. The bird flew.").find(
+      (x) => x.id === "consecutiveSentences"
+    );
+    expect(a?.score).toBe("ok");
+  });
+
+  test("varied openings → good", () => {
+    const a = analyzeReadability("The cat ran. A dog barked. Birds flew away.").find(
+      (x) => x.id === "consecutiveSentences"
+    );
+    expect(a?.score).toBe("good");
+  });
+});

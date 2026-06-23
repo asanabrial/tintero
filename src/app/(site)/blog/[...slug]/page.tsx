@@ -9,7 +9,8 @@ import { getRepository, relatedPosts, prevNextPosts, hideFuturePosts, isFuturePo
 import { postPath, permalinkSlug } from "@/lib/content/permalink";
 import { postsFingerprint } from "@/lib/content/fingerprint";
 import type { Post } from "@/lib/content";
-import { buildArticleJsonLd, buildBreadcrumbJsonLd, buildPostBreadcrumbItems } from "@/lib/jsonld";
+import { buildPostGraph, buildPostBreadcrumbItems } from "@/lib/jsonld";
+import { buildPostSocialMetadata } from "@/lib/seo/social-meta";
 import { t } from "@/lib/i18n";
 import { Prose } from "@/app/components/prose";
 import { LinkPreview, type PreviewMap } from "@/app/components/link-preview";
@@ -117,8 +118,14 @@ export async function generateMetadata({
   const seoTitle = post.seo?.title?.trim() || post.title;
   const seoDescription = post.seo?.metaDescription?.trim() || post.excerpt;
   const canonical = post.seo?.canonical?.trim() || postPath(post, siteConfigMeta.permalinks?.structure ?? "plain");
-  // Social image: explicit og:image override, else the cover image.
-  const ogImage = post.seo?.ogImage?.trim() || post.coverImage;
+
+  // Complete Open Graph / Twitter Card fragment (site name, locale, author,
+  // section, tags, modified time, site/author Twitter handle) — Yoast parity.
+  const social = buildPostSocialMetadata(
+    post,
+    siteConfigMeta,
+    siteConfigMeta.permalinks?.structure ?? "plain"
+  );
 
   return {
     title: seoTitle,
@@ -131,20 +138,7 @@ export async function generateMetadata({
         "application/rss+xml": `/comments/${slug}/feed.xml`,
       },
     },
-    openGraph: {
-      title: seoTitle,
-      description: seoDescription,
-      type: "article",
-      publishedTime: post.date,
-      url: postPath(post, siteConfigMeta.permalinks?.structure ?? "plain"),
-      ...(ogImage ? { images: [ogImage] } : {}),
-    },
-    twitter: {
-      card: ogImage ? "summary_large_image" : "summary",
-      title: seoTitle,
-      description: seoDescription,
-      ...(ogImage ? { images: [ogImage] } : {}),
-    },
+    ...social,
   };
 }
 
@@ -220,16 +214,12 @@ async function PostBody({ slug, fp }: { slug: string; fp: string }) {
 
   return (
     <>
+      {/* Connected schema graph (WebPage › BreadcrumbList › BlogPosting › Person),
+          cross-referencing the site WebSite/Organization nodes by @id — Yoast parity. */}
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{
-          __html: JSON.stringify(buildArticleJsonLd(post, siteConfig, base, siteConfig.permalinks?.structure ?? "plain")),
-        }}
-      />
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{
-          __html: JSON.stringify(buildBreadcrumbJsonLd(breadcrumbItems)),
+          __html: JSON.stringify(buildPostGraph(post, siteConfig, base, siteConfig.permalinks?.structure ?? "plain")),
         }}
       />
       {/* Yoast-style breadcrumb trail (Home › Blog › Category › Post). */}

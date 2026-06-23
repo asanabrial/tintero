@@ -6,6 +6,8 @@ import { getRepository, getLayoutSiteConfig } from "@/lib/content";
 import { t } from "@/lib/i18n";
 import { matchRedirect } from "@/lib/seo/redirects";
 import { loadRedirects } from "@/lib/seo/redirect-store";
+import { buildPageSocialMetadata } from "@/lib/seo/social-meta";
+import { buildPageGraph, type BreadcrumbItem } from "@/lib/jsonld";
 import { Prose } from "@/app/components/prose";
 import { LinkPreview, type PreviewMap } from "@/app/components/link-preview";
 import { Backlinks } from "@/app/components/backlinks";
@@ -37,37 +39,27 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const repo = getRepository();
-  const page = await repo.getPage(slug);
+  const [page, siteConfig] = await Promise.all([
+    repo.getPage(slug),
+    getLayoutSiteConfig(),
+  ]);
 
   if (!page) {
-    const { language: loc } = await getLayoutSiteConfig();
-    return { title: t(loc, "common.pageNotFound") };
+    return { title: t(siteConfig.language, "common.pageNotFound") };
   }
 
   // Yoast-style SEO overrides win over the page title/excerpt.
   const seoTitle = page.seo?.title?.trim() || page.title;
   const seoDescription = page.seo?.metaDescription?.trim() || page.excerpt;
   const canonical = page.seo?.canonical?.trim() || `/pages/${slug}`;
-  const ogImage = page.seo?.ogImage?.trim();
 
   return {
     title: seoTitle,
     description: seoDescription,
     ...(page.seo?.noindex ? { robots: { index: false, follow: false } } : {}),
     alternates: { canonical },
-    openGraph: {
-      title: seoTitle,
-      description: seoDescription,
-      type: "website",
-      url: `/pages/${slug}`,
-      ...(ogImage ? { images: [ogImage] } : {}),
-    },
-    twitter: {
-      card: ogImage ? "summary_large_image" : "summary",
-      title: seoTitle,
-      description: seoDescription,
-      ...(ogImage ? { images: [ogImage] } : {}),
-    },
+    // Complete Open Graph / Twitter fragment (site name, locale, handles).
+    ...buildPageSocialMetadata(page, siteConfig, `/pages/${slug}`),
   };
 }
 
@@ -75,7 +67,7 @@ async function PageContent({ slug }: { slug: string }) {
   await connection();
   const repo = getRepository();
   const id = nodeId("page", slug);
-  const [page, { posts: allPosts }, { pages: allPages }, linkGraph, mentions, { language: loc }] =
+  const [page, { posts: allPosts }, { pages: allPages }, linkGraph, mentions, siteConfig] =
     await Promise.all([
       repo.getPage(slug),
       repo.listPosts({ pageSize: 9999 }),
@@ -84,6 +76,7 @@ async function PageContent({ slug }: { slug: string }) {
       repo.getUnlinkedMentions(id, { publicOnly: true }),
       getLayoutSiteConfig(),
     ]);
+  const loc = siteConfig.language;
 
   if (!page) {
     // Yoast-style redirect for a removed/renamed page URL (applied only on miss).
@@ -119,8 +112,36 @@ async function PageContent({ slug }: { slug: string }) {
     previews[`/pages/${pg.slug}`] = { title: pg.title, excerpt: pg.excerpt };
   }
 
+  // Connected schema graph (WebPage › BreadcrumbList) referencing the site
+  // WebSite/Organization by @id — Yoast parity for static pages.
+  const base = siteConfig.baseUrl.replace(/\/$/, "");
+  const pageUrl = `${base}/pages/${slug}`;
+  const crumbs: BreadcrumbItem[] = [{ name: "Home", url: base }];
+  if (parentPage) {
+    crumbs.push({ name: parentPage.title, url: `${base}/pages/${parentPage.slug}` });
+  }
+  crumbs.push({ name: page.title, url: pageUrl });
+
   return (
     <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(
+            buildPageGraph({
+              base,
+              url: pageUrl,
+              name: page.seo?.title?.trim() || page.title,
+              description: page.seo?.metaDescription?.trim() || page.excerpt,
+              language: loc,
+              datePublished: page.date,
+              dateModified: page.date,
+              image: page.seo?.ogImage?.trim(),
+              breadcrumbItems: crumbs,
+            })
+          ),
+        }}
+      />
       {parentPage && (
         <nav className="mb-4 text-sm text-zinc-500 dark:text-zinc-400" aria-label={t(loc, "common.breadcrumb")}>
           <span>{parentPage.title}</span>

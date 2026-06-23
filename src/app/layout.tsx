@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { getLayoutSiteConfig } from "@/lib/content";
-import { buildWebSiteJsonLd } from "@/lib/jsonld";
+import { buildSiteGraph } from "@/lib/jsonld";
 import { buildThemeCssVars, sanitizeCustomCss, themeColorScheme } from "@/lib/content/theme";
 import "./globals.css";
 
@@ -64,7 +64,7 @@ export default async function RootLayout({
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
-            __html: JSON.stringify(buildWebSiteJsonLd(config, base)),
+            __html: JSON.stringify(buildSiteGraph(config, base)),
           }}
         />
         {children}

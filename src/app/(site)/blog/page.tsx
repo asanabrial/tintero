@@ -14,6 +14,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: t(config.language, "common.blog"),
     description: t(config.language, "common.allPosts"),
+    alternates: { canonical: "/blog" },
   };
 }
 
