@@ -1,13 +1,32 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 import { connection } from "next/server";
-import { getRepository, hideFuturePosts } from "@/lib/content";
+import { getRepository, hideFuturePosts, getLayoutSiteConfig } from "@/lib/content";
 import { t } from "@/lib/i18n";
 import { Prose } from "@/app/components/prose";
 import { formatSiteDate } from "@/lib/content/format-date";
 import { postPath } from "@/lib/content/permalink";
 
 const RECENT_POSTS_COUNT = 5;
+
+// Self-referencing canonical + Open Graph for the home page (Yoast parity).
+// Title is intentionally omitted so the root layout's default title ("{site}",
+// without the "%s | {site}" template suffix) applies on the home page.
+export async function generateMetadata(): Promise<Metadata> {
+  const config = await getLayoutSiteConfig();
+  return {
+    alternates: { canonical: "/" },
+    openGraph: {
+      type: "website",
+      siteName: config.title,
+      locale: config.language,
+      title: config.title,
+      description: config.description,
+      url: "/",
+    },
+  };
+}
 
 async function HomeContent() {
   await connection();

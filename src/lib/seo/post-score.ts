@@ -1,7 +1,7 @@
 // Computes a single overall SEO bullet for a post — used by the admin list's
 // "SEO" column (Yoast shows the same red/orange/green dot per row).
 
-import { analyzeSeo, overallScore, type AssessmentScore } from "./analysis";
+import { analyzeSeo, overallScore, extractContentFeaturesFromHtml, type AssessmentScore } from "./analysis";
 import { analyzeReadability } from "./readability";
 import type { Post } from "@/lib/content/types";
 
@@ -27,6 +27,7 @@ export function postSeoScore(post: Post): AssessmentScore | null {
       bodyText: stripHtml(post.html),
       focusKeyphrase: keyphrase,
       cornerstone: post.seo?.cornerstone,
+      content: extractContentFeaturesFromHtml(post.html),
     })
   );
 }

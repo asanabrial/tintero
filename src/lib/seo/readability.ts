@@ -90,6 +90,23 @@ export function analyzeReadability(text: string): Assessment[] {
     assessments.push({ id: "sentenceLength", score: "bad", text: `${Math.round(longPct)}% of sentences are over ${LONG_SENTENCE_WORDS} words — too many long sentences.` });
   }
 
+  // Consecutive sentences starting with the same word (Yoast flags 3+ in a row,
+  // a sign of monotonous sentence openings). Language-agnostic.
+  const firstWords = ss
+    .map((s) => (words(s)[0] ?? "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter((w) => w.length > 0);
+  let maxRun = firstWords.length > 0 ? 1 : 0;
+  let run = maxRun;
+  for (let i = 1; i < firstWords.length; i++) {
+    run = firstWords[i] === firstWords[i - 1] ? run + 1 : 1;
+    if (run > maxRun) maxRun = run;
+  }
+  if (maxRun >= 3) {
+    assessments.push({ id: "consecutiveSentences", score: "ok", text: `${maxRun} consecutive sentences start with the same word — vary your sentence openings.` });
+  } else {
+    assessments.push({ id: "consecutiveSentences", score: "good", text: "Sentence openings are varied." });
+  }
+
   // Paragraph length: the longest paragraph.
   const maxParaWords = paragraphs(text).reduce((max, p) => Math.max(max, words(p).length), 0);
   if (maxParaWords > PARAGRAPH_BAD_WORDS) {

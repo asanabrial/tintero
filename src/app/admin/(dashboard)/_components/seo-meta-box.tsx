@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import {
   analyzeSeo,
   overallScore,
+  extractContentFeaturesFromMarkdown,
   type AssessmentScore,
 } from "@/lib/seo/analysis";
 import { analyzeReadability } from "@/lib/seo/readability";
@@ -119,6 +120,7 @@ export function SeoMetaBox({
         bodyText,
         focusKeyphrase: keyphrase,
         cornerstone,
+        content: extractContentFeaturesFromMarkdown(rawBody),
       }),
       readability: analyzeReadability(bodyText),
     };

@@ -28,6 +28,56 @@ export interface SeoInput {
   focusKeyphrase: string;
   /** Cornerstone content applies stricter thresholds (Yoast cornerstone mode). */
   cornerstone?: boolean;
+  /**
+   * Structured content features (subheadings, image alts, link count) extracted
+   * from the rendered body. When provided, enables the Yoast content checks
+   * (keyphrase in subheadings / image alt, image and link presence). Source-
+   * agnostic: build it with extractContentFeaturesFromHtml or …FromMarkdown.
+   */
+  content?: ContentFeatures;
+}
+
+export interface ContentFeatures {
+  /** Text of each H2–H6 subheading. */
+  subheadings: string[];
+  /** One entry per image; the value is its alt text (may be ""). */
+  imageAlts: string[];
+  /** Number of hyperlinks in the body. */
+  linkCount: number;
+}
+
+function stripTags(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Extracts content features (subheadings, image alts, link count) from rendered
+ * HTML — used server-side where the post's HTML is already available.
+ */
+export function extractContentFeaturesFromHtml(html: string): ContentFeatures {
+  const subheadings = [...html.matchAll(/<h[2-6][^>]*>([\s\S]*?)<\/h[2-6]>/gi)].map((m) =>
+    stripTags(m[1])
+  );
+  const imageAlts = [...html.matchAll(/<img\b[^>]*>/gi)].map((m) => {
+    const alt = m[0].match(/\balt\s*=\s*"([^"]*)"/i) || m[0].match(/\balt\s*=\s*'([^']*)'/i);
+    return alt ? alt[1] : "";
+  });
+  const linkCount = (html.match(/<a\b[^>]*\bhref\s*=/gi) || []).length;
+  return { subheadings, imageAlts, linkCount };
+}
+
+/**
+ * Extracts content features from raw Markdown — used in the editor, which has the
+ * unrendered source. Recognizes ATX subheadings, image syntax, and inline links
+ * (images, which share the link bracket syntax, are excluded from the link count).
+ */
+export function extractContentFeaturesFromMarkdown(markdown: string): ContentFeatures {
+  const subheadings = [...markdown.matchAll(/^#{2,6}\s+(.+?)\s*#*$/gm)].map((m) => m[1].trim());
+  const imageAlts = [...markdown.matchAll(/!\[([^\]]*)\]\([^)]*\)/g)].map((m) => m[1]);
+  const linkCount = [...markdown.matchAll(/(!?)\[[^\]]*\]\([^)]*\)/g)].filter(
+    (m) => m[1] !== "!"
+  ).length;
+  return { subheadings, imageAlts, linkCount };
 }
 
 // Yoast-aligned thresholds.
@@ -163,6 +213,46 @@ export function analyzeSeo(input: SeoInput): Assessment[] {
     assessments.push({ id: "textLength", score: "ok", text: `The text is ${words} words long — consider adding more.` });
   } else {
     assessments.push({ id: "textLength", score: "bad", text: `The text is ${words} words long — too short (aim for ${goodWords}+).` });
+  }
+
+  // Content-structure checks (Yoast parity) — only when the caller supplied the
+  // extracted body features (subheadings, image alts, link count).
+  const content = input.content;
+  if (content) {
+    // Keyphrase in subheadings — only meaningful when subheadings exist.
+    if (content.subheadings.length > 0) {
+      const inSubheading = content.subheadings.some((h) => normalize(h).includes(keyphrase));
+      assessments.push(
+        inSubheading
+          ? { id: "keyphraseInSubheadings", score: "good", text: "The focus keyphrase appears in a subheading." }
+          : { id: "keyphraseInSubheadings", score: "ok", text: "The focus keyphrase does not appear in any subheading." }
+      );
+    }
+
+    // Image presence.
+    const imageCount = content.imageAlts.length;
+    assessments.push(
+      imageCount > 0
+        ? { id: "imagePresence", score: "good", text: `The content contains ${imageCount} image${imageCount === 1 ? "" : "s"}.` }
+        : { id: "imagePresence", score: "bad", text: "The content contains no images — add at least one." }
+    );
+
+    // Keyphrase in image alt text — only meaningful when images exist.
+    if (imageCount > 0) {
+      const inAlt = content.imageAlts.some((alt) => normalize(alt).includes(keyphrase));
+      assessments.push(
+        inAlt
+          ? { id: "keyphraseInImageAlt", score: "good", text: "The focus keyphrase appears in an image alt attribute." }
+          : { id: "keyphraseInImageAlt", score: "ok", text: "The focus keyphrase does not appear in any image alt attribute." }
+      );
+    }
+
+    // Link presence (internal or outbound).
+    assessments.push(
+      content.linkCount > 0
+        ? { id: "linkPresence", score: "good", text: `The content contains ${content.linkCount} link${content.linkCount === 1 ? "" : "s"}.` }
+        : { id: "linkPresence", score: "ok", text: "The content contains no links — consider linking to related content." }
+    );
   }
 
   return assessments;

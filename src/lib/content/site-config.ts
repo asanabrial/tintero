@@ -38,21 +38,11 @@ export async function loadSiteConfig(configPath?: string): Promise<SiteConfig> {
     return SiteConfigSchema.parse({});
   }
 
-  // Detect unknown keys before stripping them
-  const knownKeys = new Set([
-    "title",
-    "description",
-    "baseUrl",
-    "language",
-    "author",
-    "nav",
-    "social",
-    "reading",
-    "comments",
-    "writing",
-    "permalinks",
-    "theme",
-  ]);
+  // Detect unknown keys before stripping them. Derive the known-key set directly
+  // from the schema shape so it can never drift out of sync with SiteConfigSchema
+  // (a hand-maintained list previously omitted timezone, dateFormat, and footerNav,
+  // producing false "unknown key — will be ignored" warnings for valid config).
+  const knownKeys = new Set(Object.keys(SiteConfigSchema.shape));
   for (const key of Object.keys(rawData)) {
     if (!knownKeys.has(key)) {
       console.warn(

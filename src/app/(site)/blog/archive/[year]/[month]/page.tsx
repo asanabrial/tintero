@@ -14,6 +14,7 @@ import {
 } from "@/lib/content";
 import { t } from "@/lib/i18n";
 import { PostCard } from "@/app/components/post-card";
+import { buildPageGraph, type BreadcrumbItem } from "@/lib/jsonld";
 
 export async function generateStaticParams() {
   const { posts } = await getRepository().listPosts({ pageSize: 9999 });
@@ -42,7 +43,10 @@ export async function generateMetadata({
   if (y === null || m === null) {
     return { title: t(lang, "common.archives") };
   }
-  return { title: t(lang, "common.archivesFor", { period: formatPeriodLabel(y, m) }) };
+  return {
+    title: t(lang, "common.archivesFor", { period: formatPeriodLabel(y, m) }),
+    alternates: { canonical: `/blog/archive/${year}/${month}` },
+  };
 }
 
 async function MonthContent({ year, month }: { year: number; month: number }) {
@@ -93,9 +97,33 @@ export default async function MonthArchivePage({
   }
 
   const config = await getLayoutSiteConfig();
+  const base = config.baseUrl.replace(/\/$/, "");
+  const url = `${base}/blog/archive/${year}/${month}`;
+  const crumbs: BreadcrumbItem[] = [
+    { name: "Home", url: base },
+    { name: t(config.language, "common.blog"), url: `${base}/blog` },
+    { name: t(config.language, "common.archives"), url: `${base}/blog/archive` },
+    { name: formatPeriodLabel(y), url: `${base}/blog/archive/${year}` },
+    { name: formatPeriodLabel(y, m), url },
+  ];
 
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-12">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(
+            buildPageGraph({
+              base,
+              url,
+              name: t(config.language, "common.archivesFor", { period: formatPeriodLabel(y, m) }),
+              language: config.language,
+              pageType: "CollectionPage",
+              breadcrumbItems: crumbs,
+            })
+          ),
+        }}
+      />
       <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50 mb-2">
         {t(config.language, "common.archivesFor", { period: formatPeriodLabel(y, m) })}
       </h1>

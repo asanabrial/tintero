@@ -5,6 +5,7 @@ import { connection } from "next/server";
 import { getRepository, hideFuturePosts, getLayoutSiteConfig } from "@/lib/content";
 import { t } from "@/lib/i18n";
 import { PostCard } from "@/app/components/post-card";
+import { buildPageGraph, type BreadcrumbItem } from "@/lib/jsonld";
 
 export async function generateStaticParams() {
   const repo = getRepository();
@@ -29,6 +30,7 @@ export async function generateMetadata({
   return {
     title: t(lang, "common.postsInCategory", { category: categoryPath }),
     description: t(lang, "common.allPostsInCategory", { category: categoryPath }),
+    alternates: { canonical: `/blog/categories/${categoryPath}` },
   };
 }
 
@@ -72,9 +74,32 @@ export default async function CategoryArchivePage({
   const category = slug.join("/");
 
   const config = await getLayoutSiteConfig();
+  const base = config.baseUrl.replace(/\/$/, "");
+  const url = `${base}/blog/categories/${category}`;
+  const crumbs: BreadcrumbItem[] = [
+    { name: "Home", url: base },
+    { name: t(config.language, "common.blog"), url: `${base}/blog` },
+    { name: t(config.language, "common.categories"), url: `${base}/blog/categories` },
+    { name: category, url },
+  ];
 
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-12">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(
+            buildPageGraph({
+              base,
+              url,
+              name: t(config.language, "common.postsInCategory", { category }),
+              language: config.language,
+              pageType: "CollectionPage",
+              breadcrumbItems: crumbs,
+            })
+          ),
+        }}
+      />
       <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50 mb-2">
         {t(config.language, "common.postsInCategory", { category })}
       </h1>

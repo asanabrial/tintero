@@ -10,6 +10,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: t(config.language, "common.tags"),
     description: t(config.language, "common.browseByTagDesc"),
+    alternates: { canonical: "/blog/tags" },
   };
 }
 

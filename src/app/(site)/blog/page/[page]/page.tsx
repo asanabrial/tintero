@@ -36,6 +36,7 @@ export async function generateMetadata({
   const config = await getLayoutSiteConfig();
   return {
     title: t(config.language, "common.blogPageTitle", { page }),
+    alternates: { canonical: `/blog/page/${page}` },
   };
 }
 
