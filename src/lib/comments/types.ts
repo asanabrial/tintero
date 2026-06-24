@@ -22,6 +22,8 @@ export interface PublicComment {
   postSlug: string;
   authorName: string;
   authorUrl: string | null;
+  /** Pre-computed Gravatar URL — computed server-side from authorEmail, never exposes it. */
+  avatarUrl?: string | null;
   body: string;
   status: CommentStatus;
   parentId: string | null;

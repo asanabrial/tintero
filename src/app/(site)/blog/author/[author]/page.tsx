@@ -6,6 +6,8 @@ import { getRepository, buildAuthorIndex, filterPostsByAuthor, hideFuturePosts, 
 import { t } from "@/lib/i18n";
 import { PostCard } from "@/app/components/post-card";
 import { buildPageGraph, type BreadcrumbItem } from "@/lib/jsonld";
+import { gravatarUrl } from "@/lib/avatar/gravatar";
+import { Avatar } from "@/app/components/avatar";
 
 export async function generateStaticParams() {
   const { posts } = await getRepository().listPosts({ pageSize: 9999 });
@@ -56,18 +58,25 @@ async function AuthorContent({ author }: { author: string }) {
   const displayName = entries.find((e) => e.slug === author)?.name ?? author;
 
   let authorBio: string | null = null;
+  let authorAvatarUrl: string | null = null;
   try {
     const { getUserRepository } = await import("@/lib/auth/factory");
     const userRepo = getUserRepository();
     const userRecord = await userRepo.findPublicByName(displayName);
     if (userRecord?.bio) authorBio = userRecord.bio;
+    if (userRecord?.email) authorAvatarUrl = gravatarUrl(userRecord.email, { size: 80 });
   } catch {
-    // DB outage or no DB — render no bio
+    // DB outage or no DB — render no bio or avatar
   }
 
   const loc = config.language ?? "en";
   return (
     <>
+      {authorAvatarUrl && (
+        <div className="mb-4">
+          <Avatar src={authorAvatarUrl} name={displayName} size={80} />
+        </div>
+      )}
       <p className="text-zinc-500 dark:text-zinc-400 mb-8">
         {t(loc, filtered.length === 1 ? "common.postsCountOne" : "common.postsCount", { count: filtered.length })}
       </p>
