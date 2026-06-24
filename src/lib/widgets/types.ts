@@ -1,4 +1,12 @@
-export type WidgetType = "recent-posts" | "categories" | "tag-cloud" | "search" | "custom-html";
+export type WidgetType =
+  | "recent-posts"
+  | "categories"
+  | "tag-cloud"
+  | "search"
+  | "custom-html"
+  | "pages"
+  | "archives"
+  | "recent-comments";
 
 export type Widget = {
   type: WidgetType;

@@ -22,6 +22,8 @@ function clamp(value: number, min: number, max: number): number {
 export function defaultsForType(type: Widget["type"]): Partial<Widget> {
   if (type === "recent-posts") return { count: 5 };
   if (type === "custom-html") return { html: "" };
+  if (type === "pages") return { count: 5 };
+  if (type === "recent-comments") return { count: 5 };
   return {};
 }
 
