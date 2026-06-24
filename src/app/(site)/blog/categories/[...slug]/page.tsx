@@ -6,6 +6,7 @@ import { getRepository, hideFuturePosts, getLayoutSiteConfig } from "@/lib/conte
 import { t } from "@/lib/i18n";
 import { PostCard } from "@/app/components/post-card";
 import { buildPageGraph, type BreadcrumbItem } from "@/lib/jsonld";
+import { renderTermDescription } from "@/lib/content/render-term-description";
 
 export async function generateStaticParams() {
   const repo = getRepository();
@@ -73,7 +74,11 @@ export default async function CategoryArchivePage({
   const { slug } = await params;
   const category = slug.join("/");
 
-  const config = await getLayoutSiteConfig();
+  const repo = getRepository();
+  const [config, categories] = await Promise.all([
+    getLayoutSiteConfig(),
+    repo.listCategories(),
+  ]);
   const base = config.baseUrl.replace(/\/$/, "");
   const url = `${base}/blog/categories/${category}`;
   const crumbs: BreadcrumbItem[] = [
@@ -82,6 +87,11 @@ export default async function CategoryArchivePage({
     { name: t(config.language, "common.categories"), url: `${base}/blog/categories` },
     { name: category, url },
   ];
+
+  const matchedCategory = categories.find(
+    (cat) => cat.segments.join("/") === category
+  );
+  const descriptionHtml = await renderTermDescription(matchedCategory?.description);
 
   return (
     <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-12">
@@ -103,6 +113,19 @@ export default async function CategoryArchivePage({
       <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50 mb-2">
         {t(config.language, "common.postsInCategory", { category })}
       </h1>
+      {descriptionHtml && (
+        <div
+          className="prose prose-zinc dark:prose-invert max-w-none
+            prose-headings:font-semibold prose-headings:tracking-tight
+            prose-a:[color:var(--color-primary,#18181b)] dark:prose-a:[color:var(--color-primary,#fafafa)]
+            prose-a:[text-decoration-color:var(--color-accent,currentColor)] prose-a:underline prose-a:underline-offset-4
+            prose-code:rounded prose-code:bg-zinc-100 dark:prose-code:bg-zinc-800 prose-code:px-1 prose-code:py-0.5 prose-code:text-sm
+            prose-pre:bg-zinc-950 dark:prose-pre:bg-zinc-900 prose-pre:rounded-lg
+            prose-blockquote:border-zinc-300 dark:prose-blockquote:border-zinc-700
+            prose-img:rounded-lg mb-6"
+          dangerouslySetInnerHTML={{ __html: descriptionHtml }}
+        />
+      )}
       <Suspense fallback={<div className="animate-pulse h-8 bg-zinc-100 dark:bg-zinc-800 rounded" />}>
         <CategoryContent category={category} />
       </Suspense>
