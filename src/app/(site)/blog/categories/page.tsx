@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { connection } from "next/server";
 import { getRepository, getLayoutSiteConfig } from "@/lib/content";
 import { t } from "@/lib/i18n";
+import { renderTermDescription } from "@/lib/content/render-term-description";
 
 export async function generateMetadata(): Promise<Metadata> {
   const config = await getLayoutSiteConfig();
@@ -27,9 +28,13 @@ async function CategoriesContent() {
     return <p className="text-zinc-500 dark:text-zinc-400">{t(loc, "common.noCategories")}</p>;
   }
 
+  const descriptionHtmls = await Promise.all(
+    categories.map((cat) => renderTermDescription(cat.description))
+  );
+
   return (
     <ul className="space-y-1" aria-label={t(loc, "common.allCategories")}>
-      {categories.map((cat) => (
+      {categories.map((cat, i) => (
         <li
           key={cat.slug}
           style={{ paddingLeft: `${(cat.depth - 1) * 16}px` }}
@@ -43,6 +48,19 @@ async function CategoriesContent() {
               ({cat.count})
             </span>
           </Link>
+          {descriptionHtmls[i] && (
+            <div
+              className="prose prose-zinc dark:prose-invert max-w-none
+                prose-headings:font-semibold prose-headings:tracking-tight
+                prose-a:[color:var(--color-primary,#18181b)] dark:prose-a:[color:var(--color-primary,#fafafa)]
+                prose-a:[text-decoration-color:var(--color-accent,currentColor)] prose-a:underline prose-a:underline-offset-4
+                prose-code:rounded prose-code:bg-zinc-100 dark:prose-code:bg-zinc-800 prose-code:px-1 prose-code:py-0.5 prose-code:text-sm
+                prose-pre:bg-zinc-950 dark:prose-pre:bg-zinc-900 prose-pre:rounded-lg
+                prose-blockquote:border-zinc-300 dark:prose-blockquote:border-zinc-700
+                prose-img:rounded-lg text-sm"
+              dangerouslySetInnerHTML={{ __html: descriptionHtmls[i]! }}
+            />
+          )}
         </li>
       ))}
     </ul>
