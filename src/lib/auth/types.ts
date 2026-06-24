@@ -37,6 +37,8 @@ export interface PublicUser {
   createdAt: Date;
   name: string | null;
   bio: string | null;
+  /** Pre-computed Gravatar URL — computed server-side from email. */
+  avatarUrl?: string | null;
 }
 
 /** Input for creating a new user. passwordHash must be pre-hashed — never plaintext. */

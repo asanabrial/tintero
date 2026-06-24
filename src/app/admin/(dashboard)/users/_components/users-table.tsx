@@ -7,6 +7,7 @@ import type { PublicUser } from "@/lib/auth/types";
 import { useT } from "@/lib/i18n/provider";
 import { Button } from "@/app/components/ui/button";
 import { useColumnVisibility } from "../../_components/use-column-visibility";
+import { Avatar } from "@/app/components/avatar";
 
 // WordPress "Screen Options" — toggleable columns for the users list (Email is
 // always shown; persisted via useColumnVisibility under this key).
@@ -180,13 +181,16 @@ export function UsersTable({
                   />
                 </td>
                 {/* Avatar + email + WordPress-style row actions (revealed on hover/focus).
-                    WP shows a Gravatar; we render an initial since there is no avatar store.
+                    Gravatar from user email (pre-computed server-side); falls back to initial circle.
                     Email is bold text (not a link) — all per-user actions are equally secondary. */}
                 <td className="py-2.5 px-3 align-top">
                   <div className="flex items-start gap-2.5">
-                    <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#2271b1] text-xs font-semibold uppercase text-white">
-                      {(user.name?.trim() || user.email).charAt(0).toUpperCase()}
-                    </span>
+                    <Avatar
+                      src={user.avatarUrl ?? `https://www.gravatar.com/avatar/?d=mp&s=32`}
+                      name={user.name?.trim() || user.email}
+                      size={32}
+                      className="mt-0.5"
+                    />
                     <div>
                   <span className="font-semibold text-zinc-900 dark:text-zinc-50">
                     {user.email}

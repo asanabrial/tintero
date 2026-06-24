@@ -16,6 +16,8 @@ import { Prose } from "@/app/components/prose";
 import { LinkPreview, type PreviewMap } from "@/app/components/link-preview";
 import { CategoryChips } from "@/app/components/category-chips";
 import { TagChips } from "@/app/components/tag-chips";
+import { Avatar } from "@/app/components/avatar";
+import { gravatarUrl } from "@/lib/avatar/gravatar";
 import { CommentsSection } from "@/app/components/comments-section";
 import { CommentsErrorBoundary } from "@/app/components/comments-error-boundary";
 import { RelatedPosts } from "@/app/components/related-posts";
@@ -212,6 +214,21 @@ async function PostBody({ slug, fp }: { slug: string; fp: string }) {
 
   const breadcrumbItems = buildPostBreadcrumbItems(post, base, siteConfig.permalinks?.structure ?? "plain");
 
+  // Gravatar for author byline — look up user by display name to get email for hashing.
+  // PostBody is "use cache" so DB calls are acceptable here.
+  let authorAvatarUrl: string | null = null;
+  if (post.author) {
+    try {
+      const { getUserRepository } = await import("@/lib/auth/factory");
+      const userRecord = await getUserRepository().findPublicByName(post.author);
+      if (userRecord?.email) {
+        authorAvatarUrl = gravatarUrl(userRecord.email, { size: 24 });
+      }
+    } catch {
+      // DB unavailable — skip avatar
+    }
+  }
+
   return (
     <>
       {/* Connected schema graph (WebPage › BreadcrumbList › BlogPosting › Person),
@@ -276,8 +293,11 @@ async function PostBody({ slug, fp }: { slug: string; fp: string }) {
                 "{author}"
               );
               return (
-                <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                <span className="text-sm text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
                   {before}
+                  {authorAvatarUrl && (
+                    <Avatar src={authorAvatarUrl} name={post.author} size={24} />
+                  )}
                   <Link
                     href={`/blog/author/${slugifyAuthor(post.author)}`}
                     rel="author"

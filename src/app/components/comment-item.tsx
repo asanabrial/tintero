@@ -1,6 +1,7 @@
 import type { PublicComment } from "@/lib/comments";
 import { formatSiteDate } from "@/lib/content/format-date";
 import { t } from "@/lib/i18n";
+import { Avatar } from "./avatar";
 
 interface CommentItemProps {
   comment: PublicComment;
@@ -30,7 +31,10 @@ export function CommentItem({ comment, isReply = false, depth = 0, maxDepth = 0,
       id={`comment-${comment.id}`}
       className={isReply ? "ml-8 border-l-2 border-zinc-200 dark:border-zinc-700 pl-4" : ""}
     >
-      <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 mb-2">
+      <header className="flex flex-wrap items-start gap-x-2 gap-y-1 mb-2">
+        {comment.avatarUrl && (
+          <Avatar src={comment.avatarUrl} name={comment.authorName} size={40} className="mt-0.5 shrink-0" />
+        )}
         <span className="font-medium text-sm text-zinc-900 dark:text-zinc-100">
           {comment.authorName}
         </span>

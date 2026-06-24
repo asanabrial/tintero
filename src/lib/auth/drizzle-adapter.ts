@@ -6,6 +6,7 @@ import { users } from "./schema";
 import type { User, UserInput, PublicUser, Role } from "./types";
 import { DuplicateEmailError } from "./types";
 import type { UserRepository } from "./ports";
+import { gravatarUrl } from "@/lib/avatar/gravatar";
 
 // Accept the widest drizzle instance shape without coupling to a specific driver
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -47,6 +48,7 @@ function toUser(row: {
 /**
  * Maps a DB row to a PublicUser (passwordHash is DELIBERATELY absent).
  * Used by listUsers() — the hash never enters the Node.js read path.
+ * avatarUrl is computed server-side from email (Gravatar MD5 hash) and cached here.
  */
 function toPublicUser(row: {
   id: string;
@@ -63,6 +65,7 @@ function toPublicUser(row: {
     createdAt: row.createdAt,
     name: row.name ?? null,
     bio: row.bio ?? null,
+    avatarUrl: gravatarUrl(row.email, { size: 32 }),
   };
 }
 

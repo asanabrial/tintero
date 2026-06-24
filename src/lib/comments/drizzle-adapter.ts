@@ -6,6 +6,7 @@ import { comments } from "./schema";
 import type { Comment, CommentInput, CommentStatus, CommentThread, PublicComment } from "./types";
 import { CommentDepthError, CommentNotFoundError, CommentUnapprovedError } from "./types";
 import type { CommentRepository, CommentStatusCounts } from "./ports";
+import { gravatarUrl } from "@/lib/avatar/gravatar";
 
 // We use the drizzle instance typed broadly to avoid driver-specific imports.
 // The actual drizzle type is inferred at injection time.
@@ -60,16 +61,39 @@ function toPublicComment(row: {
   };
 }
 
+/**
+ * Maps a DB row (including authorEmail for Gravatar computation) to a PublicComment with avatarUrl.
+ * authorEmail is used to compute the Gravatar hash and is then discarded — never surfaces in the result.
+ */
+function toPublicCommentWithAvatar(row: {
+  id: string;
+  postSlug: string;
+  authorName: string;
+  authorEmail: string;
+  authorUrl: string | null;
+  body: string;
+  status: "pending" | "approved" | "spam" | "trash";
+  parentId: string | null;
+  createdAt: Date;
+}): PublicComment {
+  return {
+    ...toPublicComment(row),
+    avatarUrl: gravatarUrl(row.authorEmail, { size: 40 }),
+  };
+}
+
 export class DrizzleCommentAdapter implements CommentRepository {
   constructor(private readonly db: DrizzleDb) {}
 
   async listApproved(slug: string): Promise<CommentThread[]> {
-    // SELECT without author_email to comply with REQ-ADAPTER-05 / REQ-CS-02
+    // SELECT includes authorEmail solely to compute Gravatar hash server-side.
+    // authorEmail is discarded after hashing — never surfaces in PublicComment.
     const rows = await this.db
       .select({
         id: comments.id,
         postSlug: comments.postSlug,
         authorName: comments.authorName,
+        authorEmail: comments.authorEmail,
         authorUrl: comments.authorUrl,
         body: comments.body,
         status: comments.status,
@@ -94,10 +118,10 @@ export class DrizzleCommentAdapter implements CommentRepository {
     // Build threads — orphaned replies (parent not in topLevel set) are excluded
     const topLevelIds = new Set(topLevel.map((r: { id: string }) => r.id));
     const threads: CommentThread[] = topLevel.map((parent: typeof rows[0]) => ({
-      comment: toPublicComment(parent),
+      comment: toPublicCommentWithAvatar(parent),
       replies: (byParent.get(parent.id) ?? [])
         .filter((r: { parentId: string | null }) => r.parentId !== null && topLevelIds.has(r.parentId as string))
-        .map(toPublicComment),
+        .map(toPublicCommentWithAvatar),
     }));
 
     return threads;
