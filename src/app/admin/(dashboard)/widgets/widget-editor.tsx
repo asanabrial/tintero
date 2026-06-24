@@ -41,6 +41,9 @@ const PALETTE_CONFIG: {
   { type: "tag-cloud", labelKey: "admin.widgets.paletteTagCloud", descKey: "admin.widgets.tagCloudDesc" },
   { type: "search", labelKey: "admin.widgets.paletteSearch", descKey: "admin.widgets.searchDesc" },
   { type: "custom-html", labelKey: "admin.widgets.paletteCustomHtml", descKey: "admin.widgets.customHtmlDesc" },
+  { type: "pages", labelKey: "admin.widgets.palettePages", descKey: "admin.widgets.pagesDesc" },
+  { type: "archives", labelKey: "admin.widgets.paletteArchives", descKey: "admin.widgets.archivesDesc" },
+  { type: "recent-comments", labelKey: "admin.widgets.paletteRecentComments", descKey: "admin.widgets.recentCommentsDesc" },
 ];
 
 // ============================================================
@@ -132,8 +135,8 @@ function WidgetCard({
           />
         </div>
 
-        {/* Count (recent-posts only) */}
-        {widget.type === "recent-posts" && (
+        {/* Count (recent-posts, pages, recent-comments) */}
+        {(widget.type === "recent-posts" || widget.type === "pages" || widget.type === "recent-comments") && (
           <div className="space-y-1">
             <label
               htmlFor={countId}
@@ -368,7 +371,7 @@ export function WidgetEditor({ initial, saved, action }: WidgetEditorProps) {
             <Fragment key={i}>
               <input type="hidden" name={`widget[${i}][type]`} value={w.type} />
               <input type="hidden" name={`widget[${i}][title]`} value={w.title ?? ""} />
-              {w.type === "recent-posts" && (
+              {(w.type === "recent-posts" || w.type === "pages" || w.type === "recent-comments") && (
                 <input
                   type="hidden"
                   name={`widget[${i}][count]`}

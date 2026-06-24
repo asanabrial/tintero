@@ -54,6 +54,18 @@ describe("defaultsForType", () => {
   it("returns empty object for tag-cloud", () => {
     expect(defaultsForType("tag-cloud")).toEqual({});
   });
+
+  it("returns count: 5 for pages", () => {
+    expect(defaultsForType("pages")).toEqual({ count: 5 });
+  });
+
+  it("returns empty object for archives", () => {
+    expect(defaultsForType("archives")).toEqual({});
+  });
+
+  it("returns count: 5 for recent-comments", () => {
+    expect(defaultsForType("recent-comments")).toEqual({ count: 5 });
+  });
 });
 
 // ────────────────────────────────────────────────────────────

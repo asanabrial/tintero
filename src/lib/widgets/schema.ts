@@ -2,7 +2,16 @@ import { z } from "zod";
 import type { Widget, WidgetAreaConfig } from "./types";
 
 export const WidgetSchema = z.object({
-  type: z.enum(["recent-posts", "categories", "tag-cloud", "search", "custom-html"]),
+  type: z.enum([
+    "recent-posts",
+    "categories",
+    "tag-cloud",
+    "search",
+    "custom-html",
+    "pages",
+    "archives",
+    "recent-comments",
+  ]),
   title: z.string().optional(),
   count: z.number().int().positive().optional(),
   html: z.string().optional(),
