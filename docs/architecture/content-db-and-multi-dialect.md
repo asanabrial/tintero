@@ -1,6 +1,6 @@
 # Architecture Design: Content in DB + Multi-Dialect Support
 
-**Status:** Draft for review (pre-implementation)
+**Status:** Decisions resolved — ready for implementation (§10)
 **Change:** `content-db-and-multi-dialect`
 **Author:** Architecture
 **Scope:** One epic, two coupled goals — move content into the database for scale, and make the database dialect selectable at install.
@@ -199,14 +199,14 @@ The fewer dialect-specific column behaviors we rely on, the smaller each per-dia
 | --- | --- | --- | --- |
 | Primary keys | `uuid("id").defaultRandom()` / `serial` | **App-generated UUID stored as `text`** (`crypto.randomUUID()` at insert time) | `uuid` type and `defaultRandom()` are pg-specific; `serial` is pg auto-increment. A text UUID generated in app code is identical across all four dialects AND makes insert+SELECT deterministic (§5). |
 | Enums | `pgEnum(...)` | **`text` column + Zod validation** at the boundary | `pgEnum` is Postgres-only; MySQL `ENUM` differs; SQLite has none. Zod (already the project's validation layer, see `schema.ts`) enforces the allowed set portably. |
-| Timestamps | `timestamp(withTimezone)` / `defaultNow()` | **Epoch integer OR ISO-8601 text**, generated in app code | `timestamptz` and `defaultNow()` semantics vary across dialects; storing a portable scalar removes the difference. (Open decision §10: epoch-int vs ISO-text — epoch-int sorts/keysets cheapest; ISO-text is human-readable and matches today's `date: z.string().date()` frontmatter.) |
+| Timestamps | `timestamp(withTimezone)` / `defaultNow()` | **Epoch integer (ms, UTC)**, generated in app code; converted to `Date` at the boundary | `timestamptz` and `defaultNow()` semantics vary across dialects; a portable scalar removes the difference. **Resolved (was §10): epoch-int over ISO-text.** SQLite has no native date type (only `INTEGER`/`TEXT`/`REAL`), so epoch-int is the true common denominator — Drizzle's sqlite timestamp helper is sugar over an integer column anyway. Epoch-int also sorts/keysets cheapest (§6). The `date: z.string().date()` frontmatter is parsed to epoch at the migration boundary (§7). |
 | Booleans | pg boolean | `integer` 0/1 | SQLite has no native boolean; integer 0/1 is universal. |
 | Auto-increment sequence | `serial` (revisions `sequence`) | Avoid; if monotonic ordering is needed use `created_at` + `id` keyset, or a per-row computed sequence | `serial` is pg-only. |
 
 Tradeoffs:
 - App-generated UUID PKs are 36-char text (larger than a 4-byte serial). At millions of rows this costs index size and join width. Accepted: portability + deterministic insert+SELECT (§5) outweigh it; this matches the existing precedent (`revisions.authorId` is already `text`, comments use UUID PKs).
 - Losing `pgEnum` means no DB-level enforcement of allowed values; Zod at the boundary is the single enforcement point. Acceptable — the project already treats Zod as the schema authority.
-- Epoch/ISO timestamps lose `timestamptz` timezone semantics; the app already normalizes to a single timezone via `site.yaml` (`timezone` config), so this is not a regression.
+- Epoch-int timestamps lose `timestamptz` timezone semantics; the app already normalizes to a single timezone via `site.yaml` (`timezone` config), so this is not a regression. Values are stored as UTC milliseconds and wrapped in `Date` at the read boundary.
 
 ### 4.4 Note on the existing tables
 
@@ -343,12 +343,14 @@ Each phase is independently shippable and reversible. The FS adapter remains the
 
 ---
 
-## 10. Open decisions for the owner
+## 10. Resolved decisions
 
-- **SEO/custom-field storage:** EAV `content_meta` (recommended, portable, extensible) vs typed columns on `content` (simpler reads, rigid, per-dialect migrations). This is the single highest-leverage schema choice.
-- **v1 dialect set:** Postgres + SQLite first (recommended) vs all four dialects from day one (adds the no-`RETURNING` blocker + MySQL FULLTEXT to the critical path immediately).
-- **Cursor vs offset for the admin UI:** keyset everywhere (best scale, no jump-to-page) vs keeping OFFSET for the admin list where editors expect numbered pages and deep random access.
-- **Timestamp representation:** epoch integer (cheapest keyset/sort) vs ISO-8601 text (human-readable, matches today's `date: z.string().date()` frontmatter).
-- **Slug uniqueness scope:** global unique slug across posts+pages vs unique per `type` (affects URL routing and the single-table discriminator design in §3.1).
-- **Category descendant queries:** recursive CTE at read time vs a maintained closure-table / ancestor-path column (write cost vs read cost).
-- **Single `content` table vs split posts/pages:** design recommends one table with a `type` discriminator (§3.1); confirm before schema work.
+All open decisions were resolved by the owner ("aplica el más recomendable"). Each took the design-recommended option. These are now binding inputs to the Phase 1 task plan.
+
+1. **SEO/custom-field storage → EAV `content_meta`.** Portable (no PG-only `jsonb`), extensible without per-dialect migrations, and keeps SEO off the hot `content` row. SEO metadata is read only on single-content render (never used for list filtering), so the classic EAV scale trap does not apply here. Indexed on `(content_id, meta_key)`. (§3.4)
+2. **v1 dialect set → Postgres + SQLite.** Both support `RETURNING` natively, so v1 avoids the hardest blocker (§5). MySQL + MariaDB deferred to v2. (§4.6)
+3. **Pagination → keyset/cursor as the default everywhere** (public listings, APIs, sitemap). The admin list MAY retain OFFSET numbered pages **only** on bounded, filtered result sets (status/type/search), where editors expect jump-to-page and the row count is already small. (§6)
+4. **Timestamps → epoch integer (ms, UTC), single portable column.** SQLite has no native date type, so epoch-int is the true common denominator; chosen over ISO-text and over per-dialect native types. App converts to `Date` at the boundary. (§4.3)
+5. **Slug uniqueness → unique per `(type, slug)`.** Matches WordPress per-post-type uniqueness and the separate `/blog/{slug}` vs `/{slug}` route namespaces. Preserves the single-table discriminator design. (§3.1)
+6. **Category descendant queries → recursive CTE at read time.** All target dialects support `WITH RECURSIVE`. No write-time closure/ancestor-path maintenance in v1: the terms tree stays small (shallow, thousands of rows) even when content is huge, and the hot aggregate is already covered by the cached `terms.count` column. Revisit a closure column only if profiling shows it hot. (§3.2)
+7. **Single `content` table with a `type` discriminator** (confirmed) over split `posts`/`pages` tables. (§3.1)
