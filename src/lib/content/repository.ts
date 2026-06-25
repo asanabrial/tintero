@@ -20,14 +20,47 @@ import type { LinkGraph, UnlinkedMention } from "./links";
 import type { Category, Page, Post, SiteConfig, Tag } from "./types";
 
 const CONTENT_ROOT = path.join(process.cwd(), "content");
+/** Config directory — contains site.yaml and taxonomies.yaml (mirrors FS adapter path). */
+const CONFIG_ROOT = path.join(process.cwd(), "config");
 
-let _adapter: FilesystemContentAdapter | null = null;
+let _adapter: ContentRepository | null = null;
 
-export function getAdapter(): FilesystemContentAdapter {
+/**
+ * Returns the singleton content adapter.
+ *
+ * Selects the adapter based on the CONTENT_STORE environment variable:
+ *   - unset / "fs" / any other value → FilesystemContentAdapter (default, unchanged behavior)
+ *   - "db"                           → DrizzleContentAdapter (requires DATABASE_DIALECT + DATABASE_URL/FILE)
+ *
+ * The DB adapter and its transitive dependencies (db-factory.ts → bun:sqlite) are loaded
+ * lazily via require() only when CONTENT_STORE="db" is explicitly set, keeping bun:sqlite
+ * out of the default module graph for the Next.js/Turbopack build.
+ */
+export function getAdapter(): ContentRepository {
   if (!_adapter) {
-    _adapter = new FilesystemContentAdapter(CONTENT_ROOT);
+    if (process.env.CONTENT_STORE === "db") {
+      // Lazy-load to keep bun:sqlite out of the default fs bundle.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { DrizzleContentAdapter } = require("./drizzle-adapter") as typeof import("./drizzle-adapter");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getContentDb } = require("./db-factory") as typeof import("./db-factory");
+      _adapter = new DrizzleContentAdapter(getContentDb(), CONFIG_ROOT);
+    } else {
+      _adapter = new FilesystemContentAdapter(CONTENT_ROOT);
+    }
   }
   return _adapter;
+}
+
+/**
+ * Reset the memoised adapter singleton.
+ *
+ * ONLY for use in tests — call this in beforeEach / afterEach to isolate
+ * test cases that manipulate process.env.CONTENT_STORE.
+ * Never call this in production code.
+ */
+export function __resetAdapterForTests(): void {
+  _adapter = null;
 }
 
 // ---- Module-level cached inner functions (fp is FIRST arg → part of cache key) ----
