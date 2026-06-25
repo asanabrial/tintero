@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { getRepository, hideFuturePosts, getLayoutSiteConfig } from "@/lib/content";
+import { getRepository, hideFuturePosts, getLayoutSiteConfig, getLayoutTags } from "@/lib/content";
 import { t } from "@/lib/i18n";
 import { PostCard } from "@/app/components/post-card";
 import { buildPageGraph, type BreadcrumbItem } from "@/lib/jsonld";
@@ -72,10 +72,9 @@ export default async function TagPage({
 }) {
   const { tag } = await params;
 
-  const repo = getRepository();
   const [config, tags] = await Promise.all([
     getLayoutSiteConfig(),
-    repo.listTags(),
+    getLayoutTags(),
   ]);
   const base = config.baseUrl.replace(/\/$/, "");
   const url = `${base}/blog/tags/${tag}`;
