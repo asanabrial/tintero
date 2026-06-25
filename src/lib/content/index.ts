@@ -7,7 +7,7 @@ import { FsPageWriter } from "./fs-page-writer";
 import { getRevisionRepository } from "../revisions/factory";
 import type { ContentWriter, PageWriter } from "./ports";
 
-export { getRepository, getLayoutSiteConfig } from "./repository";
+export { getRepository, getLayoutSiteConfig, getLayoutTags, getLayoutCategories } from "./repository";
 export type { ContentRepository, ListPostsOptions, ListPostsResult, ListPagesOptions, ListPagesResult, AdminStatus, StatusCounts } from "./ports";
 export type { ArchivePeriod, Category, CommentsConfig, Page, Paginated, Post, ReadingConfig, SiteConfig, Tag, NavItem, WritingConfig } from "./types";
 export {

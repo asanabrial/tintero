@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { getRepository, hideFuturePosts, getLayoutSiteConfig } from "@/lib/content";
+import { getRepository, hideFuturePosts, getLayoutSiteConfig, getLayoutCategories } from "@/lib/content";
 import { t } from "@/lib/i18n";
 import { PostCard } from "@/app/components/post-card";
 import { buildPageGraph, type BreadcrumbItem } from "@/lib/jsonld";
@@ -74,10 +74,9 @@ export default async function CategoryArchivePage({
   const { slug } = await params;
   const category = slug.join("/");
 
-  const repo = getRepository();
   const [config, categories] = await Promise.all([
     getLayoutSiteConfig(),
-    repo.listCategories(),
+    getLayoutCategories(),
   ]);
   const base = config.baseUrl.replace(/\/$/, "");
   const url = `${base}/blog/categories/${category}`;

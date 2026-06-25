@@ -164,6 +164,20 @@ export async function getLayoutSiteConfig(): Promise<SiteConfig> {
   return cachedGetSiteConfig("");
 }
 
+// Shell-safe tag list — bypasses fingerprint computation so the static PPR shell
+// can call this outside <Suspense> without triggering "uncached data" build errors.
+// Uses "" as the fixed fingerprint key (same pattern as getLayoutSiteConfig).
+// NOTE: Does NOT reflect live taxonomy changes immediately — picks up changes on
+// cache expiry or server restart. Intentional for the static heading/description shell.
+export async function getLayoutTags(): Promise<Tag[]> {
+  return cachedListTags("");
+}
+
+// Shell-safe category list — same rationale as getLayoutTags above.
+export async function getLayoutCategories(): Promise<Category[]> {
+  return cachedListCategories("");
+}
+
 // ---- Uncached facade: compute area fingerprint, delegate to cached inner ----
 // Area mapping (per design § 3):
 //   postsFingerprint      → listPosts, getPost, listTags, listCategories
