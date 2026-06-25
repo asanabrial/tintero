@@ -75,7 +75,7 @@ All bodies and term descriptions are `TEXT` columns holding raw Markdown. Types 
 Justification:
 - Posts and pages already share the overwhelming majority of fields (title, slug, status, body, excerpt, timestamps, SEO). The divergent fields are few: posts carry `tags`/`categories`/`visibility`/`password`/`sticky`/`comments`/`coverImage`/`author`; pages carry `parent`/`menu_order`. Nullable columns + the discriminator absorb this cleanly.
 - The `getLinkGraph` / `getUnlinkedMentions` / wikilink resolver paths treat posts and pages **uniformly** (`scanGraphInputs` in `fs-adapter.ts` emits a `type` field already). A single table makes the cross-type slug lookup and link graph a single index scan instead of a union.
-- One slug-uniqueness boundary is simpler than reconciling two. (Open decision §10 on whether slug uniqueness is global or scoped by `type`.)
+- One slug-uniqueness boundary is simpler than reconciling two. Slug uniqueness is scoped per `(type, slug)` — see §10 #5.
 - Two tables would duplicate every index, every keyset query, and every adapter method.
 
 Columns:
@@ -94,13 +94,13 @@ Columns:
 | `cover_image` | text NULL | |
 | `author_label` | text NULL | Display byline (frontmatter `author`). |
 | `author_id` | text NULL | FK-ish reference to `users.id` (soft; users is its own module). |
-| `sticky` | integer/boolean | 0/1 portable boolean. Posts only. |
-| `comments_enabled` | integer/boolean | |
+| `sticky` | integer (0/1) | Portable boolean (§4.3). Posts only. |
+| `comments_enabled` | integer (0/1) | Portable boolean (§4.3). |
 | `parent_id` | text NULL | Self-FK for page hierarchy (replaces frontmatter `parent` slug). |
 | `menu_order` | integer | Pages; default 0. |
-| `published_at` | integer (epoch) or text (ISO) | Portable timestamp (§4.4). Drives keyset + scheduled status. |
-| `created_at` | integer/text | Portable timestamp. |
-| `updated_at` | integer/text | Portable timestamp. Powers per-row cache tags. |
+| `published_at` | integer (epoch ms, UTC) | Portable timestamp (§4.3). Drives keyset + scheduled status. |
+| `created_at` | integer (epoch ms, UTC) | Portable timestamp (§4.3). |
+| `updated_at` | integer (epoch ms, UTC) | Portable timestamp (§4.3). Powers per-row cache tags. |
 
 > SEO fields (`seo.title`, `metaDescription`, `focusKeyphrase`, `canonical`, `noindex`, `ogImage`, `cornerstone` — see `SeoFrontmatterSchema` in `src/lib/content/schema.ts`) are **NOT** columns here. They go in `content_meta` (§3.4). Rationale in §3.4 and §4.
 
@@ -121,7 +121,7 @@ Replaces slash-path encoding (`category.ts`) and the YAML registry (`config/taxo
 
 Hierarchy notes:
 - The reader-facing `Category` type (`src/lib/content/types.ts`) still exposes `segments`, `slug` (slash-joined), `depth`. These become **derived projections** computed by walking `parent_id` at read time, not stored encodings. The port contract is preserved.
-- "Descendant match" queries (current `matchesCategory`) become either a recursive CTE (Postgres/SQLite/MySQL8+/MariaDB10.2+ all support recursive CTEs) or a maintained closure/ancestor-path column. Open decision §10.
+- "Descendant match" queries (current `matchesCategory`) use a **recursive CTE at read time** (Postgres/SQLite/MySQL8+/MariaDB10.2+ all support `WITH RECURSIVE`). No maintained closure/ancestor-path column in v1 — see §10 #6.
 
 ### 3.3 `term_relationships` table — content ↔ term join
 
@@ -150,13 +150,13 @@ Justification given multi-dialect portability:
 - EAV keeps the schema **identical across dialects** (just text columns), supports arbitrary future custom fields without migrations, and keeps SEO fields off the hot `content` row so list queries stay narrow.
 - Cost: SEO reads are a second lookup (or a join) keyed by `content_id`. This is acceptable because SEO is needed on single-content render, not on list pages, and is index-backed.
 
-This is flagged as an **open decision** (§10) because it is the highest-leverage tradeoff in the schema.
+This was the highest-leverage tradeoff in the schema; resolved in favor of EAV `content_meta` — see §10 #1.
 
 ### 3.5 Indexes needed for scale
 
 | Index | Table | Purpose |
 | --- | --- | --- |
-| unique(`slug`) (or unique(`type`,`slug`)) | `content` | O(log n) single-content fetch (replaces `getPost` linear scan). |
+| unique(`type`, `slug`) | `content` | O(log n) single-content fetch (replaces `getPost` linear scan). Scoped per type — §10 #5. |
 | (`type`, `status`, `published_at` DESC, `id`) | `content` | The primary list/keyset index. Covers `listPosts`/`listPages` filtered by type+status, ordered for keyset pagination. |
 | (`type`, `status`) partial/filtered | `content` | Status counts (`listPostStatusCounts`) via GROUP BY instead of scan. |
 | (`parent_id`) | `content` | Page hierarchy lookups. |
@@ -249,7 +249,7 @@ Because PKs are generated in app code **before** the insert (§4.3), the MySQL p
 
 | Concern | Today | Target |
 | --- | --- | --- |
-| Pagination | OFFSET/`Array.slice` over full corpus (`fs-adapter.ts:292-300`) | **Keyset/cursor pagination** on (`published_at` DESC, `id`). Cursor is the last row's `(published_at, id)`; query is `WHERE (published_at, id) < (cursor)`. O(page) not O(corpus). Admin UI keeps offset only where deep random access is required (open decision §10). |
+| Pagination | OFFSET/`Array.slice` over full corpus (`fs-adapter.ts:292-300`) | **Keyset/cursor pagination** on (`published_at` DESC, `id`). Cursor is the last row's `(published_at, id)`; query is `WHERE (published_at, id) < (cursor)`. O(page) not O(corpus). Admin UI keeps offset only on bounded, filtered result sets where editors expect jump-to-page (§10 #3). |
 | Term counts | Recomputed scan per call (`listTags`/`listCategories`) | **Cached `terms.count`**, maintained incrementally on write, rebuildable by a reconcile job. |
 | Cache invalidation | Global area fingerprint busts all `posts` (`repository.ts`) | **Per-row cache tags** (`post:{slug}`, `page:{slug}`) already exist for `getPost`/`getPage`; extend to writes so a single edit busts only that row + affected list/term tags. Replace the fingerprint stat-walk with `updated_at`-based or version-based keys. |
 | Static params | `generateStaticParams` enumerates corpus; `sitemap.ts` uses MAX_SAFE_INTEGER loop | **On-demand rendering / ISR** — render content lazily on first request, cache with per-row tags. Sitemap becomes a **sitemap index + paginated 50k fragments** backed by keyset queries. |
