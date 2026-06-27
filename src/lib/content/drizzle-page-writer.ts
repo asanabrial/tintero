@@ -45,6 +45,10 @@ import { isSafeSlug, resolveCollisionSlug, slugifyTitle } from "./slug";
 import { newId, nowEpoch, toEpoch, fromEpoch } from "./db-values";
 import { SEO_FIELDS, seoMetaKey, seoMetaValue, reassembleSeo } from "./seo-meta";
 import { cleanSeo } from "./fs-writer";
+import {
+  serializePageMarkdown,
+  type PageSerializableFrontmatter,
+} from "./markdown-serialize";
 import type {
   PageWriter,
   CreatePageInput,
@@ -320,8 +324,25 @@ export class DrizzlePageWriter implements PageWriter {
     // Write SEO content_meta rows
     await this.insertSeoMeta(contentId, parseResult.data.seo);
 
-    // Best-effort revision capture
-    await this.captureRevision(finalSlug, input.body, rev);
+    // Build the full serialized markdown for revision capture — mirrors FsPageWriter.createPage.
+    // Slug is pinned in frontmatter only when it differs from the title-derived slug.
+    // status is omitted when "published" (the default for pages); menu_order omitted when 0.
+    const inferredFromTitle = slugifyTitle(parseResult.data.title);
+    const needsExplicitSlug = finalSlug !== inferredFromTitle;
+    const pageFm: PageSerializableFrontmatter = {
+      title: parseResult.data.title,
+      ...(needsExplicitSlug ? { slug: finalSlug } : {}),
+      date: parseResult.data.date,
+      ...(parseResult.data.status === "draft" ? { status: "draft" as const } : {}),
+      ...(parseResult.data.excerpt ? { excerpt: parseResult.data.excerpt } : {}),
+      ...(parseResult.data.parent ? { parent: parseResult.data.parent } : {}),
+      ...(parseResult.data.menu_order !== 0 ? { menu_order: parseResult.data.menu_order } : {}),
+      ...(cleanSeo(parseResult.data.seo) ? { seo: cleanSeo(parseResult.data.seo) } : {}),
+    };
+    const pageRawContent = serializePageMarkdown(pageFm, input.body);
+
+    // Best-effort revision capture — AFTER the write succeeds; failures swallowed.
+    await this.captureRevision(finalSlug, pageRawContent, rev);
 
     return { ok: true, slug: finalSlug };
   }
@@ -435,8 +456,25 @@ export class DrizzlePageWriter implements PageWriter {
     // Replace SEO meta (delete old set, insert new set)
     await this.updateSeoMeta(contentId, parseResult.data.seo);
 
-    // Best-effort revision
-    await this.captureRevision(newSlug, input.body, rev);
+    // Build the full serialized markdown for revision capture — mirrors FsPageWriter.updatePage.
+    // Slug is pinned only when it differs from the title-derived inferred slug.
+    // status omitted when "published"; menu_order omitted when 0.
+    const inferredFromUpdateTitle = slugifyTitle(input.title);
+    const shouldPinSlugPage = newSlug !== inferredFromUpdateTitle;
+    const updatePageFm: PageSerializableFrontmatter = {
+      title: parseResult.data.title,
+      ...(shouldPinSlugPage ? { slug: newSlug } : {}),
+      date: parseResult.data.date,
+      ...(parseResult.data.status === "draft" ? { status: "draft" as const } : {}),
+      ...(parseResult.data.excerpt ? { excerpt: parseResult.data.excerpt } : {}),
+      ...(parseResult.data.parent ? { parent: parseResult.data.parent } : {}),
+      ...(parseResult.data.menu_order !== 0 ? { menu_order: parseResult.data.menu_order } : {}),
+      ...(cleanSeo(parseResult.data.seo) ? { seo: cleanSeo(parseResult.data.seo) } : {}),
+    };
+    const updatePageRawContent = serializePageMarkdown(updatePageFm, input.body);
+
+    // Best-effort revision — AFTER all writes succeed; failures swallowed.
+    await this.captureRevision(newSlug, updatePageRawContent, rev);
 
     return { ok: true, slug: newSlug };
   }
@@ -577,8 +615,25 @@ export class DrizzlePageWriter implements PageWriter {
     slug: string,
     status: "published" | "draft"
   ): Promise<WriteResult> {
-    const rows: Array<{ id: string }> = await this.db
-      .select({ id: this.schema.content.id })
+    // Select the full page row upfront — all fields needed to build the revision fm.
+    const rows: Array<{
+      id: string;
+      title: string;
+      body_markdown: string;
+      excerpt: string | null;
+      parent_id: string | null;
+      menu_order: number;
+      published_at: number;
+    }> = await this.db
+      .select({
+        id: this.schema.content.id,
+        title: this.schema.content.title,
+        body_markdown: this.schema.content.body_markdown,
+        excerpt: this.schema.content.excerpt,
+        parent_id: this.schema.content.parent_id,
+        menu_order: this.schema.content.menu_order,
+        published_at: this.schema.content.published_at,
+      })
       .from(this.schema.content)
       .where(
         and(
@@ -593,11 +648,61 @@ export class DrizzlePageWriter implements PageWriter {
       return { ok: false, error: { kind: "page_not_found", slug } };
     }
 
+    const r = rows[0];
     const now = nowEpoch();
     await this.db
       .update(this.schema.content)
       .set({ status, updated_at: now })
-      .where(eq(this.schema.content.id, rows[0].id));
+      .where(eq(this.schema.content.id, r.id));
+
+    // Build serialized markdown for revision capture — mirrors FsPageWriter.setPageStatus
+    // which does: mergedData = { ...existing.rawData }; set/delete status; captureRevision.
+    // Fetch SEO and resolve parent slug for the full fm reconstruction.
+    const metaRows: Array<{ meta_key: string; meta_value: string | null }> =
+      await this.db
+        .select({
+          meta_key: this.schema.content_meta.meta_key,
+          meta_value: this.schema.content_meta.meta_value,
+        })
+        .from(this.schema.content_meta)
+        .where(
+          and(
+            eq(this.schema.content_meta.content_id, r.id),
+            like(this.schema.content_meta.meta_key, "seo.%")
+          )
+        );
+    const seo = reassembleSeo(metaRows);
+
+    // Resolve parent_id UUID → parent page slug (mirrors readRawPage which also resolves parent)
+    let parentSlug: string | undefined;
+    if (r.parent_id) {
+      const slugMap = await this.resolveIdsToSlugs(new Set([r.parent_id]));
+      parentSlug = slugMap.get(r.parent_id);
+    }
+
+    // Slug is pinned only when it differs from the title-derived slug — same logic
+    // as createPage, so the serialized fm matches what FS would produce from readRawPage.
+    // status is omitted when "published" (page convention); menu_order omitted when 0.
+    const inferredFromTitle = slugifyTitle(r.title);
+    const needsExplicitSlug = slug !== inferredFromTitle;
+    const pageFm: PageSerializableFrontmatter = {
+      title: r.title,
+      ...(needsExplicitSlug ? { slug } : {}),
+      date: fromEpoch(r.published_at).toISOString().slice(0, 10),
+      ...(status === "draft" ? { status: "draft" as const } : {}),
+      ...(r.excerpt ? { excerpt: r.excerpt } : {}),
+      ...(parentSlug ? { parent: parentSlug } : {}),
+      ...(r.menu_order !== 0 ? { menu_order: r.menu_order } : {}),
+      ...(cleanSeo(seo) ? { seo: cleanSeo(seo) } : {}),
+    };
+    // Prepend "\n" to the body to match gray-matter's content field:
+    // gray-matter returns the blank-line separator as part of the body (i.e.
+    // "\n" + body_markdown), so re-serializing with just body_markdown would produce
+    // one fewer blank line than the FS writer produces after a readRawPage round-trip.
+    const rawContent = serializePageMarkdown(pageFm, "\n" + r.body_markdown);
+
+    // Best-effort revision capture — AFTER the UPDATE succeeds; failures swallowed.
+    await this.captureRevision(slug, rawContent, undefined);
 
     return { ok: true, slug };
   }

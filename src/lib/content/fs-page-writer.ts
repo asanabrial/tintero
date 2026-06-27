@@ -6,7 +6,11 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import matter from "gray-matter";
-import { cleanSeo, serializeKnownFrontmatter, wrapFrontmatter } from "./fs-writer";
+import { cleanSeo } from "./fs-writer";
+import {
+  serializePageMarkdown,
+  type PageSerializableFrontmatter,
+} from "./markdown-serialize";
 import { deriveSlug, isSafeSlug, resolveCollisionSlug, slugifyTitle } from "./slug";
 import { PageFrontmatterSchema } from "./schema";
 import type { PageWriter, CreatePageInput, UpdatePageInput, WriteResult, TrashedItemInfo } from "./ports";
@@ -14,32 +18,23 @@ import type { RevisionContext } from "../revisions/types";
 import type { RevisionRepository } from "../revisions/ports";
 import { getRevisionRepository } from "../revisions/factory";
 
+// Re-export types so existing consumers keep working without import changes.
+export type { PageSerializableFrontmatter };
+
 // ============================================================
 // Page-shaped serialization helpers
 // ============================================================
 
-export type PageSerializableFrontmatter = {
-  title: string;
-  slug?: string;
-  date: string;
-  status?: "draft" | "published";
-  excerpt?: string;
-  parent?: string;
-  menu_order?: number;
-  [key: string]: unknown; // allows unknown author-added keys (ADR-7)
-};
-
-const PAGE_KEY_ORDER = ["title", "slug", "date", "status", "excerpt", "parent", "menu_order", "seo"] as const;
-
 /**
  * Builds the full markdown file content for a page with YAML frontmatter.
- * Key order: title, slug?, date, excerpt?, then unknown extra keys.
- * NO status/tags/categories/comments keys are emitted.
+ * Delegates to serializePageMarkdown from markdown-serialize.ts so FS and DB
+ * writers produce byte-identical revision rawContent.
+ * Key order: title, slug?, date, status?, excerpt?, parent?, menu_order?, seo?
+ * Post-only keys (tags, categories, comments) are never emitted.
  * Format: ---\n{yaml}---\n\n{body trimmed}\n
  */
 export function buildPageFileContent(fm: PageSerializableFrontmatter, body: string): string {
-  const yaml = serializeKnownFrontmatter(PAGE_KEY_ORDER, fm as Record<string, unknown>);
-  return wrapFrontmatter(yaml, body);
+  return serializePageMarkdown(fm, body);
 }
 
 // ============================================================
