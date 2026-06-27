@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS content (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_content_type_slug
-  ON content (type, slug);
+  ON content (type, slug) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_content_type_status_published_at_id
   ON content (type, status, published_at, id);
@@ -199,6 +199,55 @@ async function getTermCount(
     .limit(1);
   return rows.length > 0 ? rows[0].count : null;
 }
+
+describe("DrizzleContentWriter — terms.count: trash/restore lifecycle (DB-specific)", () => {
+  let sqliteDb: InstanceType<typeof Database>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let db: ReturnType<typeof drizzle<any>>;
+  let writer: DrizzleContentWriter;
+
+  beforeEach(() => {
+    sqliteDb = new Database(":memory:");
+    sqliteDb.exec(DDL);
+    db = drizzle(sqliteDb, { schema });
+    writer = new DrizzleContentWriter(db, schema);
+  });
+
+  afterEach(() => {
+    sqliteDb.close();
+  });
+
+  test("trashPost drops terms live count; restorePost restores it", async () => {
+    // Create post with tags "x" and "y"
+    const post = await writer.createPost({
+      title: "Count Trash Test",
+      date: "2024-09-01",
+      status: "published",
+      tags: ["x", "y"],
+      categories: [],
+      comments: false,
+      body: "body",
+    });
+    expect(post.ok).toBe(true);
+    if (!post.ok) return;
+
+    // Before trash: counts are 1
+    expect(await getTermCount(db, "tag", "x")).toBe(1);
+    expect(await getTermCount(db, "tag", "y")).toBe(1);
+
+    // After trash: counts drop to 0 (post is no longer live)
+    const trashResult = await writer.trashPost(post.slug);
+    expect(trashResult.ok).toBe(true);
+    expect(await getTermCount(db, "tag", "x")).toBe(0);
+    expect(await getTermCount(db, "tag", "y")).toBe(0);
+
+    // After restore: counts come back to 1
+    const restoreResult = await writer.restorePost(post.slug);
+    expect(restoreResult.ok).toBe(true);
+    expect(await getTermCount(db, "tag", "x")).toBe(1);
+    expect(await getTermCount(db, "tag", "y")).toBe(1);
+  });
+});
 
 describe("DrizzleContentWriter — terms.count reconciliation (DB-specific)", () => {
   let sqliteDb: InstanceType<typeof Database>;

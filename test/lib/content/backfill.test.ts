@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS content (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_content_type_slug
-  ON content (type, slug);
+  ON content (type, slug) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_content_type_status_published_at_id
   ON content (type, status, published_at, id);
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS content (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_content_type_slug
-  ON content (type, slug);
+  ON content (type, slug) WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_content_type_status_published_at_id
   ON content (type, status, published_at, id);

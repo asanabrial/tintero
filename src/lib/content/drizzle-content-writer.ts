@@ -27,7 +27,7 @@
  *   action layer's expected keys (title, date, status, tags, categories, etc.).
  */
 
-import { and, eq, inArray, isNull, like, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, like, ne, sql } from "drizzle-orm";
 import {
   PostFrontmatterSchema,
 } from "./schema";
@@ -160,8 +160,11 @@ export class DrizzleContentWriter implements ContentWriter {
 
   /**
    * Reconcile terms.count for a set of term IDs.
-   * Recounts from term_relationships and sets count = 0 for terms no longer
-   * referenced.
+   * Recounts LIVE usage only: counts DISTINCT content_id in term_relationships
+   * joined to content WHERE content.deleted_at IS NULL.
+   * This ensures trashed posts do not inflate term counts; restoring a post
+   * brings its terms' counts back.
+   * Sets count = 0 for terms no longer referenced by any live post.
    */
   private async reconcileTermCounts(termIds: string[]): Promise<void> {
     if (termIds.length === 0) return;
@@ -174,7 +177,16 @@ export class DrizzleContentWriter implements ContentWriter {
         cnt: sql`count(distinct ${this.schema.term_relationships.content_id})`,
       })
       .from(this.schema.term_relationships)
-      .where(inArray(this.schema.term_relationships.term_id, uniqueIds))
+      .innerJoin(
+        this.schema.content,
+        eq(this.schema.term_relationships.content_id, this.schema.content.id)
+      )
+      .where(
+        and(
+          inArray(this.schema.term_relationships.term_id, uniqueIds),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
       .groupBy(this.schema.term_relationships.term_id);
 
     const countMap = new Map(counts.map((r) => [r.term_id, Number(r.cnt)]));
@@ -738,30 +750,196 @@ export class DrizzleContentWriter implements ContentWriter {
   }
 
   // ------------------------------------------------------------------
-  // Trash operations — Phase 5 Slice C (not yet implemented)
+  // Trash operations — Phase 5 Slice C
   // ------------------------------------------------------------------
 
-  async trashPost(_slug: string): Promise<WriteResult> {
-    throw new Error(
-      "DrizzleContentWriter: trash operations land in Phase 5 Slice C"
-    );
+  /**
+   * Move a LIVE post to the trash by setting deleted_at.
+   * Returns post_not_found when no live post with that slug exists.
+   * term_relationships and content_meta are LEFT INTACT so restore
+   * brings them back. Reconciles term counts (trashed post no longer live).
+   */
+  async trashPost(slug: string): Promise<WriteResult> {
+    // Find the live row
+    const rows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          eq(this.schema.content.slug, slug),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (rows.length === 0) {
+      return { ok: false, error: { kind: "post_not_found", slug } };
+    }
+
+    const contentId = rows[0].id;
+    const now = nowEpoch();
+
+    await this.db
+      .update(this.schema.content)
+      .set({ deleted_at: now, updated_at: now })
+      .where(eq(this.schema.content.id, contentId));
+
+    // Reconcile term counts — trashed post no longer counts as live
+    const termRels: Array<{ term_id: string }> = await this.db
+      .select({ term_id: this.schema.term_relationships.term_id })
+      .from(this.schema.term_relationships)
+      .where(eq(this.schema.term_relationships.content_id, contentId));
+    await this.reconcileTermCounts(termRels.map((r) => r.term_id));
+
+    return { ok: true, slug };
   }
 
+  /**
+   * List all trashed posts (deleted_at IS NOT NULL).
+   * Returns TrashedItemInfo[] sorted by published_at DESC, slug ASC for determinism.
+   * date field is YYYY-MM-DD derived from published_at epoch milliseconds.
+   */
   async listTrashedPosts(): Promise<TrashedItemInfo[]> {
-    throw new Error(
-      "DrizzleContentWriter: trash operations land in Phase 5 Slice C"
-    );
+    const rows: Array<{
+      slug: string;
+      title: string;
+      published_at: number;
+    }> = await this.db
+      .select({
+        slug: this.schema.content.slug,
+        title: this.schema.content.title,
+        published_at: this.schema.content.published_at,
+      })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          isNotNull(this.schema.content.deleted_at)
+        )
+      )
+      .orderBy(
+        desc(this.schema.content.published_at),
+        asc(this.schema.content.slug)
+      );
+
+    return rows.map((r) => ({
+      slug: r.slug,
+      title: r.title,
+      date: fromEpoch(r.published_at).toISOString().slice(0, 10),
+    }));
   }
 
-  async restorePost(_slug: string): Promise<WriteResult> {
-    throw new Error(
-      "DrizzleContentWriter: trash operations land in Phase 5 Slice C"
-    );
+  /**
+   * Restore a trashed post by clearing deleted_at.
+   * Returns post_not_found when no trashed post with that slug exists.
+   * Checks for a live slug collision before restoring (mirrors FS behavior:
+   * FS checks whether live/{slug}.md exists before moving from trash).
+   * Reconciles term counts on success (restored post is now live again).
+   */
+  async restorePost(slug: string): Promise<WriteResult> {
+    // Find the trashed row
+    const trashedRows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          eq(this.schema.content.slug, slug),
+          isNotNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (trashedRows.length === 0) {
+      return { ok: false, error: { kind: "post_not_found", slug } };
+    }
+
+    // Check for a live collision (another live row owns this slug)
+    const liveRows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          eq(this.schema.content.slug, slug),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (liveRows.length > 0) {
+      return { ok: false, error: { kind: "slug_collision", slug } };
+    }
+
+    const contentId = trashedRows[0].id;
+    const now = nowEpoch();
+
+    await this.db
+      .update(this.schema.content)
+      .set({ deleted_at: null, updated_at: now })
+      .where(eq(this.schema.content.id, contentId));
+
+    // Reconcile term counts — restored post is now live
+    const termRels: Array<{ term_id: string }> = await this.db
+      .select({ term_id: this.schema.term_relationships.term_id })
+      .from(this.schema.term_relationships)
+      .where(eq(this.schema.term_relationships.content_id, contentId));
+    await this.reconcileTermCounts(termRels.map((r) => r.term_id));
+
+    return { ok: true, slug };
   }
 
-  async permanentlyDeletePost(_slug: string): Promise<WriteResult> {
-    throw new Error(
-      "DrizzleContentWriter: trash operations land in Phase 5 Slice C"
-    );
+  /**
+   * Permanently hard-delete a trashed post.
+   * Graceful when the slug is not in the trash (ok:true, mirrors FS ENOENT).
+   * Cascades: deletes term_relationships + content_meta before the content row.
+   * Reconciles term counts for freed terms.
+   */
+  async permanentlyDeletePost(slug: string): Promise<WriteResult> {
+    // Find the trashed row
+    const rows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          eq(this.schema.content.slug, slug),
+          isNotNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (rows.length === 0) {
+      // Graceful: not in trash
+      return { ok: true, slug };
+    }
+
+    const contentId = rows[0].id;
+
+    // Collect affected term IDs before cascade delete
+    const termRels: Array<{ term_id: string }> = await this.db
+      .select({ term_id: this.schema.term_relationships.term_id })
+      .from(this.schema.term_relationships)
+      .where(eq(this.schema.term_relationships.content_id, contentId));
+    const affectedTermIds = termRels.map((r) => r.term_id);
+
+    // Cascade: term_relationships → content_meta → content
+    await this.db
+      .delete(this.schema.term_relationships)
+      .where(eq(this.schema.term_relationships.content_id, contentId));
+
+    await this.db
+      .delete(this.schema.content_meta)
+      .where(eq(this.schema.content_meta.content_id, contentId));
+
+    await this.db
+      .delete(this.schema.content)
+      .where(eq(this.schema.content.id, contentId));
+
+    // Reconcile term counts for freed terms
+    await this.reconcileTermCounts(affectedTermIds);
+
+    return { ok: true, slug };
   }
 }

@@ -14,6 +14,7 @@
  * Indexes are defined per §3.5 of the architecture design.
  */
 
+import { isNull } from "drizzle-orm";
 import {
   index,
   integer,
@@ -58,8 +59,10 @@ export const content = sqliteTable(
     deleted_at: integer("deleted_at"),
   },
   (t) => [
-    // Unique slug per content type (§10 #5)
-    uniqueIndex("idx_content_type_slug").on(t.type, t.slug),
+    // Unique slug per content type among LIVE rows (§10 #5).
+    // Partial: WHERE deleted_at IS NULL so a trashed post frees the slug for reuse —
+    // this enables the trash → create-same-slug → restore-collision lifecycle.
+    uniqueIndex("idx_content_type_slug").on(t.type, t.slug).where(isNull(t.deleted_at)),
     // Primary list/keyset index — covers listPosts/listPages ordered by recency
     index("idx_content_type_status_published_at_id").on(
       t.type,

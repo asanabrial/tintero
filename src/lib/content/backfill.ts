@@ -21,7 +21,7 @@
  *   onConflictDoUpdate to upsert SEO rows cleanly without delete-before-insert.
  */
 
-import { eq, sql } from "drizzle-orm";
+import { eq, isNull, sql } from "drizzle-orm";
 import { newId, toEpoch, nowEpoch, toBool01 } from "./db-values";
 import { slugifyTag } from "./tag";
 import { slugifyCategory, joinSlug } from "./category";
@@ -236,6 +236,10 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       })
       .onConflictDoUpdate({
         target: [schema.content.type, schema.content.slug],
+        // targetWhere scopes the conflict check to the partial unique index
+        // (WHERE deleted_at IS NULL). Without this, SQLite/PG cannot resolve
+        // the conflict target to the partial index definition.
+        targetWhere: isNull(schema.content.deleted_at),
         set: {
           title: post.title,
           status: post.status,
@@ -298,6 +302,9 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       })
       .onConflictDoUpdate({
         target: [schema.content.type, schema.content.slug],
+        // targetWhere scopes the conflict check to the partial unique index
+        // (WHERE deleted_at IS NULL). Same rationale as the post upsert above.
+        targetWhere: isNull(schema.content.deleted_at),
         set: {
           title: page.title,
           status: page.status,
