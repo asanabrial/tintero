@@ -130,7 +130,8 @@ export const content_meta = sqliteTable(
     meta_value: text("meta_value"),
   },
   (t) => [
-    // SEO/custom-field lookup per content
-    index("idx_content_meta_content_id_meta_key").on(t.content_id, t.meta_key),
+    // SEO/custom-field lookup per content — unique so onConflictDoUpdate works
+    // for idempotent backfill and SEO upserts.
+    uniqueIndex("idx_content_meta_content_id_meta_key").on(t.content_id, t.meta_key),
   ]
 );

@@ -136,6 +136,28 @@ export interface ListPagesResult {
   totalPages: number;
 }
 
+// ============================================================
+// RawBodyReader port — provides access to the raw (pre-render) markdown body.
+// Implemented by FilesystemContentAdapter so backfill can store body_markdown
+// without going through the HTML rendering pipeline.
+// Kept minimal: only the raw body string is needed; frontmatter is already
+// available through ContentRepository.listPosts / listPages.
+// ============================================================
+
+export interface RawBodyReader {
+  /**
+   * Read the raw (unrendered) markdown body for a post by slug.
+   * Returns null when the slug is not found.
+   */
+  readRawPost(slug: string): Promise<{ body: string } | null>;
+
+  /**
+   * Read the raw (unrendered) markdown body for a page by slug.
+   * Returns null when the slug is not found.
+   */
+  readRawPage(slug: string): Promise<{ body: string } | null>;
+}
+
 export interface ContentRepository {
   listPosts(options?: ListPostsOptions): Promise<ListPostsResult>;
   getPost(slug: string, options?: ListPostsOptions): Promise<Post | null>;

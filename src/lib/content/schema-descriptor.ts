@@ -223,10 +223,10 @@ export const SCHEMA_DESCRIPTOR = {
     } satisfies Record<string, LogicalType>,
     pk: ["id"],
     indexes: [
-      // SEO/custom-field lookup per content
+      // SEO/custom-field lookup per content — unique for idempotent upserts
       {
         name: "idx_content_meta_content_id_meta_key",
-        unique: false,
+        unique: true,
         columns: [
           { name: "content_id", order: "asc" },
           { name: "meta_key", order: "asc" },

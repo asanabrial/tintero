@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS content_meta (
   meta_value TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_content_meta_content_id_meta_key
+CREATE UNIQUE INDEX IF NOT EXISTS idx_content_meta_content_id_meta_key
   ON content_meta (content_id, meta_key);
 `;
 

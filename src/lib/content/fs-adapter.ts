@@ -15,7 +15,7 @@ import type { SearchableEntry } from "./search";
 import { matchesAdminStatus, computeStatusCounts } from "./schedule";
 import { buildLinkGraph, buildWikiResolver, unlinkedMentions } from "./links";
 import type { GraphInputNode, LinkGraph, UnlinkedMention, WikiResolver } from "./links";
-import type { ContentRepository, ListPostsOptions, ListPostsResult, ListPagesOptions, ListPagesResult, StatusCounts } from "./ports";
+import type { ContentRepository, RawBodyReader, ListPostsOptions, ListPostsResult, ListPagesOptions, ListPagesResult, StatusCounts } from "./ports";
 import type { Category, Page, Post, SiteConfig, Tag } from "./types";
 
 const PAGE_SIZE = 10;
@@ -144,7 +144,7 @@ function shouldIncludePageDrafts(options?: { includeDrafts?: boolean }): boolean
   return env === "development" || env === "test";
 }
 
-export class FilesystemContentAdapter implements ContentRepository {
+export class FilesystemContentAdapter implements ContentRepository, RawBodyReader {
   private readonly rootDir: string;
   private readonly postsDir: string;
   private readonly pagesDir: string;
@@ -595,6 +595,42 @@ export class FilesystemContentAdapter implements ContentRepository {
     }
 
     return inputs;
+  }
+
+  // ===========================================================================
+  // RawBodyReader implementation — used by backfill to read raw markdown bodies
+  // without going through the HTML rendering pipeline.
+  // ===========================================================================
+
+  /**
+   * Returns the raw (unrendered) markdown body of a post identified by slug.
+   * Scans postsDir recursively; returns null when no matching file is found.
+   * Draft/private/password posts are returned — backfill reads everything.
+   */
+  async readRawPost(slug: string): Promise<{ body: string } | null> {
+    const relPaths = await collectMarkdownFiles(this.postsDir, this.postsDir);
+    for (const rel of relPaths) {
+      const item = await parseMarkdownFile(rel, this.postsDir);
+      if (!item) continue;
+      if (item.slug !== slug) continue;
+      return { body: item.body };
+    }
+    return null;
+  }
+
+  /**
+   * Returns the raw (unrendered) markdown body of a page identified by slug.
+   * Scans pagesDir recursively; returns null when no matching file is found.
+   */
+  async readRawPage(slug: string): Promise<{ body: string } | null> {
+    const relPaths = await collectMarkdownFiles(this.pagesDir, this.pagesDir);
+    for (const rel of relPaths) {
+      const item = await parseMarkdownPageFile(rel, this.pagesDir);
+      if (!item) continue;
+      if (item.slug !== slug) continue;
+      return { body: item.body };
+    }
+    return null;
   }
 
   async getLinkGraph(): Promise<LinkGraph> {
