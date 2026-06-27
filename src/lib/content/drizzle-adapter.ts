@@ -11,7 +11,7 @@
  */
 
 import * as path from "node:path";
-import { and, asc, count, desc, eq, gt, inArray, like, lte, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNull, like, lte, ne, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { renderMarkdown } from "./markdown";
 import { loadSiteConfig } from "./site-config";
@@ -146,7 +146,8 @@ export class DrizzleContentAdapter implements ContentRepository {
           slug: content.slug,
           title: content.title,
         })
-        .from(content);
+        .from(content)
+        .where(isNull(content.deleted_at));
 
     return buildWikiResolver(
       rows.map((r) => ({
@@ -318,7 +319,8 @@ export class DrizzleContentAdapter implements ContentRepository {
         status: content.status,
         visibility: content.visibility,
       })
-      .from(content);
+      .from(content)
+      .where(isNull(content.deleted_at));
 
     return rows.map((row) => ({
       type: row.type as "post" | "page",
@@ -344,7 +346,7 @@ export class DrizzleContentAdapter implements ContentRepository {
     // -----------------------------------------------------------------------
     // Build SQL WHERE conditions (structural filters pushed into the DB)
     // -----------------------------------------------------------------------
-    const conditions: SQL[] = [eq(content.type, "post")];
+    const conditions: SQL[] = [eq(content.type, "post"), isNull(content.deleted_at)];
 
     // includeDrafts gate: when false, exclude drafts and private posts in SQL.
     // This mirrors the two TS guards in the old code:
@@ -671,7 +673,7 @@ export class DrizzleContentAdapter implements ContentRepository {
     }> = await this.db
       .select()
       .from(content)
-      .where(and(eq(content.type, "post"), eq(content.slug, slug)));
+      .where(and(eq(content.type, "post"), eq(content.slug, slug), isNull(content.deleted_at)));
 
     if (rows.length === 0) return null;
     const row = rows[0];
@@ -730,7 +732,7 @@ export class DrizzleContentAdapter implements ContentRepository {
     const offset = (page - 1) * pageSize;
 
     // Build SQL WHERE conditions
-    const conditions: SQL[] = [eq(content.type, "page")];
+    const conditions: SQL[] = [eq(content.type, "page"), isNull(content.deleted_at)];
     if (!includeDrafts) {
       conditions.push(eq(content.status, "published"));
     }
@@ -925,7 +927,7 @@ export class DrizzleContentAdapter implements ContentRepository {
     }> = await this.db
       .select()
       .from(content)
-      .where(and(eq(content.type, "page"), eq(content.slug, slug)));
+      .where(and(eq(content.type, "page"), eq(content.slug, slug), isNull(content.deleted_at)));
 
     if (rows.length === 0) return null;
     const row = rows[0];
@@ -975,7 +977,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         published_at: content.published_at,
       })
       .from(content)
-      .where(eq(content.type, "post"));
+      .where(and(eq(content.type, "post"), isNull(content.deleted_at)));
 
     // computeStatusCounts only needs status + date; build minimal Post-shaped objects.
     const posts: Post[] = rows.map((row) => ({
@@ -1012,7 +1014,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         visibility: content.visibility,
       })
       .from(content)
-      .where(eq(content.type, "post"));
+      .where(and(eq(content.type, "post"), isNull(content.deleted_at)));
 
     const filtered = postRows.filter((row) => {
       if (row.status === "draft" && !includeDrafts) return false;
@@ -1073,7 +1075,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         visibility: content.visibility,
       })
       .from(content)
-      .where(eq(content.type, "post"));
+      .where(and(eq(content.type, "post"), isNull(content.deleted_at)));
 
     const filtered = postRows.filter((row) => {
       if (row.status === "draft" && !includeDrafts) return false;

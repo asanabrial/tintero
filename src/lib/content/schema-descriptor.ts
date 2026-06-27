@@ -103,6 +103,8 @@ export const SCHEMA_DESCRIPTOR = {
       published_at: "integer",
       created_at: "integer",
       updated_at: "integer",
+      // Soft-delete: epoch-ms when trashed; NULL = live. Orthogonal to status.
+      deleted_at: "integer-null",
     } satisfies Record<string, LogicalType>,
     pk: ["id"],
     indexes: [
@@ -147,6 +149,12 @@ export const SCHEMA_DESCRIPTOR = {
         name: "idx_content_author_id",
         unique: false,
         columns: [{ name: "author_id", order: "asc" }],
+      },
+      // Soft-delete filter — cheap IS NULL scan for live-content reads
+      {
+        name: "idx_content_deleted_at",
+        unique: false,
+        columns: [{ name: "deleted_at", order: "asc" }],
       },
     ] satisfies IndexDescriptor[],
   },

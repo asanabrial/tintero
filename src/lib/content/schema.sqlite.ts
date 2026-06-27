@@ -52,6 +52,10 @@ export const content = sqliteTable(
     published_at: integer("published_at").notNull(),
     created_at: integer("created_at").notNull(),
     updated_at: integer("updated_at").notNull(),
+    // Soft-delete: epoch-ms when the row was trashed, NULL = live.
+    // Orthogonal to status (published/draft) — trashing does not change status.
+    // Read paths filter WHERE deleted_at IS NULL; only backfill/trash writers set this.
+    deleted_at: integer("deleted_at"),
   },
   (t) => [
     // Unique slug per content type (§10 #5)
@@ -69,6 +73,8 @@ export const content = sqliteTable(
     index("idx_content_parent_id").on(t.parent_id),
     // Author archive pages
     index("idx_content_author_id").on(t.author_id),
+    // Soft-delete filter — cheap IS NULL scan for live-content reads
+    index("idx_content_deleted_at").on(t.deleted_at),
   ]
 );
 
