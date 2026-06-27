@@ -88,7 +88,7 @@ export async function WidgetArea({ widgets, locale }: WidgetAreaProps) {
             );
           case "search":
             return (
-              <SearchWidget key={index} title={title || t(loc, "common.search")} />
+              <SearchWidget key={index} title={title || t(loc, "common.search")} locale={loc} />
             );
           case "custom-html":
             return (
