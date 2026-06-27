@@ -15,6 +15,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
+import { eq } from "drizzle-orm";
 import * as schema from "@/lib/content/schema.sqlite";
 import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
 import { newId, toEpoch, nowEpoch, toBool01 } from "@/lib/content/db-values";
@@ -303,7 +304,15 @@ async function makeDrizzleHarness(): Promise<Harness> {
         }
       }
 
-      // Seed pages
+      // Seed pages — two-pass, mirroring backfill.ts parent resolution.
+      //
+      // Pass 1: insert all pages with parent_id=null and collect slug→id map.
+      // Storing the slug string directly in parent_id is semantically wrong:
+      // parent_id is a self-FK holding the parent's UUID. The adapter's
+      // resolveIdsToSlugs looks up rows by UUID, so a slug-valued parent_id
+      // resolves to nothing → Page.parent would come back undefined.
+      const pageIdBySlug = new Map<string, string>();
+
       for (const page of data.pages ?? []) {
         const contentId = newId();
         await db.insert(schema.content).values({
@@ -321,17 +330,32 @@ async function makeDrizzleHarness(): Promise<Harness> {
           author_id: null,
           sticky: 0,
           comments_enabled: 0,
-          parent_id: page.parent ?? null,
+          parent_id: null,
           menu_order: page.menuOrder ?? 0,
           published_at: toEpoch(page.date),
           created_at: now,
           updated_at: now,
         });
 
+        pageIdBySlug.set(page.slug, contentId);
+
         // SEO content_meta rows for pages
         if (page.seo !== undefined) {
           await insertSeoMeta(contentId, page.seo as Record<string, unknown>);
         }
+      }
+
+      // Pass 2: resolve parent slug → UUID and UPDATE parent_id.
+      for (const page of data.pages ?? []) {
+        if (!page.parent) continue;
+        const parentId = pageIdBySlug.get(page.parent);
+        if (!parentId) continue;
+        const childId = pageIdBySlug.get(page.slug);
+        if (!childId) continue;
+        await db
+          .update(schema.content)
+          .set({ parent_id: parentId })
+          .where(eq(schema.content.id, childId));
       }
 
       // Write YAML config files for getSiteConfig / listTags / listCategories

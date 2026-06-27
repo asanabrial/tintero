@@ -208,12 +208,21 @@ const STANDARD_SEED: SeedData = {
       },
     },
     {
+      slug: "team",
+      title: "Team Page",
+      date: "2026-01-01",
+      status: "published",
+      body: "Meet the team.",
+      menuOrder: 1,
+      parent: "about",
+    },
+    {
       slug: "contact",
       title: "Contact Page",
       date: "2026-01-01",
       status: "draft",
       body: "Contact us.",
-      menuOrder: 1,
+      menuOrder: 2,
     },
   ],
   taxonomyTags: [
@@ -610,7 +619,7 @@ export function runContentRepositoryContract(
 
       test("total and totalPages reflect the filtered page count", async () => {
         const result = await harness.repo.listPages({ includeDrafts: false });
-        expect(result.total).toBe(1); // only "about" is published
+        expect(result.total).toBe(2); // "about" (published) + "team" (published child of about)
         expect(result.totalPages).toBe(1);
       });
 
@@ -634,6 +643,30 @@ export function runContentRepositoryContract(
         const contact = pages.find((p) => p.slug === "contact");
         expect(contact).toBeDefined();
         expect(contact!.seo).toBeUndefined();
+      });
+
+      /**
+       * Parent round-trip via listPages.
+       *
+       * "team" is seeded with parent: "about". The adapter must resolve the
+       * stored parent reference back to the slug "about".
+       * DB harnesses use a two-pass seed (mirrors backfill): all pages inserted
+       * with parent_id=null first, then parent_id updated to the parent's UUID.
+       * Without the two-pass fix, DB adapters store the slug string in parent_id
+       * which resolves to nothing → parent comes back undefined.
+       */
+      test("child page has parent === parentSlug via listPages", async () => {
+        const { pages } = await harness.repo.listPages({ includeDrafts: false });
+        const team = pages.find((p) => p.slug === "team");
+        expect(team).toBeDefined();
+        expect(team!.parent).toBe("about");
+      });
+
+      test("page without a parent has parent === undefined via listPages", async () => {
+        const { pages } = await harness.repo.listPages({ includeDrafts: false });
+        const about = pages.find((p) => p.slug === "about");
+        expect(about).toBeDefined();
+        expect(about!.parent).toBeUndefined();
       });
     });
 
@@ -687,6 +720,25 @@ export function runContentRepositoryContract(
         const page = await harness.repo.getPage("contact", { includeDrafts: true });
         expect(page).not.toBeNull();
         expect(page!.seo).toBeUndefined();
+      });
+
+      /**
+       * Parent round-trip via getPage.
+       *
+       * "team" is a child of "about". getPage("team").parent must return "about"
+       * (the slug). getPage("about").parent must be undefined (no parent).
+       * See the listPages parent note above for the two-pass harness rationale.
+       */
+      test("child page has parent === parentSlug via getPage", async () => {
+        const page = await harness.repo.getPage("team");
+        expect(page).not.toBeNull();
+        expect(page!.parent).toBe("about");
+      });
+
+      test("page without a parent has parent === undefined via getPage", async () => {
+        const page = await harness.repo.getPage("about");
+        expect(page).not.toBeNull();
+        expect(page!.parent).toBeUndefined();
       });
     });
 
