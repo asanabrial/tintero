@@ -93,11 +93,72 @@ export async function importBundle(
   for (const item of bundle.posts) {
     await importPost(item, deps, mode, report);
   }
-  for (const item of bundle.pages) {
+
+  // Sort pages topologically (parents before children) so DrizzlePageWriter can
+  // resolve parent slug→UUID at create time. Harmless for FsPageWriter.
+  for (const item of topoSortPages(bundle.pages)) {
     await importPage(item, deps, mode, report);
   }
 
   return report;
+}
+
+/**
+ * Topologically sorts pages so parents appear before children (Kahn's BFS).
+ * Pages whose parent is absent from the bundle have in-degree 0 and are emitted first.
+ * Cycle detection: if a cycle is found, the remaining cyclic pages are appended in
+ * their original bundle order (safe fallback — never loops forever).
+ */
+function topoSortPages(pages: BundleItem[]): BundleItem[] {
+  if (pages.length <= 1) return pages;
+
+  const slugSet = new Set(pages.map((p) => p.slug));
+  const pageMap = new Map<string, BundleItem>(pages.map((p) => [p.slug, p]));
+
+  // Build dependency graph: parent → [children slugs], restricted to in-bundle parents.
+  const childrenOf = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+
+  for (const page of pages) {
+    if (!inDegree.has(page.slug)) inDegree.set(page.slug, 0);
+    const parent = page.frontmatter.parent as string | undefined;
+    if (typeof parent === "string" && slugSet.has(parent)) {
+      inDegree.set(page.slug, (inDegree.get(page.slug) ?? 0) + 1);
+      const siblings = childrenOf.get(parent) ?? [];
+      siblings.push(page.slug);
+      childrenOf.set(parent, siblings);
+    }
+  }
+
+  // Kahn's BFS: start from nodes with in-degree 0 (no in-bundle parent dependency).
+  const queue: string[] = [];
+  for (const page of pages) {
+    if ((inDegree.get(page.slug) ?? 0) === 0) {
+      queue.push(page.slug);
+    }
+  }
+
+  const sorted: BundleItem[] = [];
+  while (queue.length > 0) {
+    const slug = queue.shift()!;
+    sorted.push(pageMap.get(slug)!);
+    for (const child of childrenOf.get(slug) ?? []) {
+      const deg = (inDegree.get(child) ?? 1) - 1;
+      inDegree.set(child, deg);
+      if (deg === 0) queue.push(child);
+    }
+  }
+
+  // Cycle fallback: any page not yet emitted is part of a cycle.
+  // Append them in original bundle order — deterministic, never hangs.
+  if (sorted.length < pages.length) {
+    const emitted = new Set(sorted.map((p) => p.slug));
+    for (const page of pages) {
+      if (!emitted.has(page.slug)) sorted.push(page);
+    }
+  }
+
+  return sorted;
 }
 
 // ============================================================
@@ -132,7 +193,7 @@ async function importPost(
     return;
   }
 
-  // Step 3: build writer input
+  // Step 3: build writer input — forward ALL PostFrontmatter fields (Bug 2 fix)
   const fm = fmResult.data;
   const input: CreatePostInput = {
     title: fm.title,
@@ -144,6 +205,13 @@ async function importPost(
     categories: fm.categories,
     comments: fm.comments,
     body: item.raw,
+    author: fm.author,
+    authorId: fm.authorId,
+    coverImage: fm.coverImage,
+    visibility: fm.visibility,
+    password: fm.password,
+    sticky: fm.sticky,
+    seo: fm.seo,
   };
 
   // Step 4-5: existence check + collision mode (per ADR-D3)
@@ -201,13 +269,17 @@ async function importPage(
     return;
   }
 
-  // Step 3: build writer input
+  // Step 3: build writer input — forward ALL PageFrontmatter fields (Bug 2 fix)
   const fm = fmResult.data;
   const input: CreatePageInput = {
     title: fm.title,
     slug: item.slug,
     date: fm.date,
+    status: fm.status,
     excerpt: fm.excerpt,
+    parent: fm.parent,
+    menuOrder: fm.menu_order,
+    seo: fm.seo,
     body: item.raw,
   };
 

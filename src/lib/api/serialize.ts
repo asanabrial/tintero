@@ -74,10 +74,25 @@ const POST_FM_KEYS = [
   "slug",
   "comments",
   "author",
+  "authorId",
+  "coverImage",
+  "visibility",
+  "password",
+  "sticky",
+  "seo",
 ] as const;
 
 // Known PageFrontmatter keys from schema.ts (PageFrontmatterSchema keys)
-const PAGE_FM_KEYS = ["title", "date", "excerpt", "slug"] as const;
+const PAGE_FM_KEYS = [
+  "title",
+  "date",
+  "status",
+  "excerpt",
+  "slug",
+  "parent",
+  "menu_order",
+  "seo",
+] as const;
 
 /**
  * Picks only the known PostFrontmatter keys from raw data.

@@ -5,7 +5,7 @@ import {
 } from "../../src/lib/content/import";
 import type { ImportDeps } from "../../src/lib/content/import";
 import { buildExportBundle, BUNDLE_VERSION } from "../../src/lib/content/export";
-import type { WriteResult } from "../../src/lib/content/ports";
+import type { WriteResult, CreatePageInput, CreatePostInput } from "../../src/lib/content/ports";
 
 // ============================================================
 // Helpers
@@ -395,6 +395,258 @@ describe("importBundle — round-trip", () => {
     const report = await importBundle(parsed.bundle, deps, "skip");
     expect(report.skipped).toContain("round-trip-post");
     expect(report.imported).toHaveLength(0);
+    expect(report.failed).toHaveLength(0);
+  });
+});
+
+// ============================================================
+// Helper: minimal SiteConfig for round-trip tests
+// ============================================================
+function makeSiteConfig() {
+  return {
+    title: "Test Blog",
+    description: "",
+    baseUrl: "https://example.com",
+    language: "en",
+    author: { name: "Author" },
+    nav: [],
+    footerNav: [],
+    reading: { homepage: "latest-posts" as const, posts_per_page: 10 },
+    comments: { enabled: true, moderation: "manual" as const },
+  };
+}
+
+// ============================================================
+// Bug 1+2: Page round-trip fidelity
+// Fails today because PAGE_FM_KEYS omits status/parent/menu_order/seo (Bug 1)
+// and importPage drops those fields from CreatePageInput (Bug 2).
+// ============================================================
+
+describe("importBundle — page round-trip fidelity (Bug 1+2)", () => {
+  test("page export→import preserves parent, status=draft, menuOrder, seo", async () => {
+    const bundle = buildExportBundle({
+      posts: [],
+      pages: [
+        {
+          page: {
+            slug: "child-page",
+            title: "Child Page",
+            date: "2024-01-01",
+            excerpt: "A child.",
+            html: "<p>content</p>",
+            status: "draft",
+            parent: "parent-page",
+            menuOrder: 5,
+            seo: { title: "SEO Title", noindex: true },
+          },
+          raw: {
+            frontmatter: {},
+            rawData: {
+              title: "Child Page",
+              date: "2024-01-01",
+              status: "draft",
+              excerpt: "A child.",
+              parent: "parent-page",
+              menu_order: 5,
+              seo: { title: "SEO Title", noindex: true },
+            },
+            body: "Child page content.",
+          },
+        },
+      ],
+      siteConfig: makeSiteConfig(),
+      exportedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const parsed = parseImportBundle(JSON.stringify(bundle));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const createPage = mock(async (input: CreatePageInput) =>
+      makeOkResult(input.slug ?? "child-page")
+    );
+    const deps = makeMockDeps({
+      pageExists: mock(async () => false),
+      createPage,
+    });
+
+    const report = await importBundle(parsed.bundle, deps, "skip");
+    expect(report.imported).toContain("child-page");
+    expect(report.failed).toHaveLength(0);
+
+    const calls = createPage.mock.calls;
+    expect(calls).toHaveLength(1);
+    const input = calls[0][0] as CreatePageInput;
+    expect(input.parent).toBe("parent-page");
+    expect(input.status).toBe("draft");
+    expect(input.menuOrder).toBe(5);
+    expect(input.seo).toEqual({ title: "SEO Title", noindex: true });
+  });
+});
+
+// ============================================================
+// Bug 1+2: Post round-trip fidelity
+// Fails today because POST_FM_KEYS omits authorId/coverImage/visibility/password/sticky/seo (Bug 1)
+// and importPost drops author/authorId/coverImage/visibility/password/sticky/seo from CreatePostInput (Bug 2).
+// ============================================================
+
+describe("importBundle — post round-trip fidelity (Bug 1+2)", () => {
+  test("post export→import preserves author, authorId, coverImage, visibility, sticky, seo", async () => {
+    const bundle = buildExportBundle({
+      posts: [
+        {
+          post: {
+            slug: "full-post",
+            title: "Full Post",
+            date: "2024-06-15",
+            status: "draft",
+            tags: ["tag1"],
+            categories: ["Tech"],
+            excerpt: "An excerpt.",
+            html: "<p>content</p>",
+            comments: false,
+            sticky: true,
+            author: "Jane Doe",
+            authorId: "550e8400-e29b-41d4-a716-446655440000",
+            coverImage: "/uploads/cover.jpg",
+            visibility: "private",
+            seo: { title: "Custom SEO", focusKeyphrase: "test" },
+          },
+          raw: {
+            frontmatter: {},
+            rawData: {
+              title: "Full Post",
+              date: "2024-06-15",
+              status: "draft",
+              tags: ["tag1"],
+              categories: ["Tech"],
+              excerpt: "An excerpt.",
+              comments: false,
+              sticky: true,
+              author: "Jane Doe",
+              authorId: "550e8400-e29b-41d4-a716-446655440000",
+              coverImage: "/uploads/cover.jpg",
+              visibility: "private",
+              seo: { title: "Custom SEO", focusKeyphrase: "test" },
+            },
+            body: "Post body content.",
+          },
+        },
+      ],
+      pages: [],
+      siteConfig: makeSiteConfig(),
+      exportedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const parsed = parseImportBundle(JSON.stringify(bundle));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const createPost = mock(async (input: CreatePostInput) =>
+      makeOkResult(input.slug ?? "full-post")
+    );
+    const deps = makeMockDeps({
+      postExists: mock(async () => false),
+      createPost,
+    });
+
+    const report = await importBundle(parsed.bundle, deps, "skip");
+    expect(report.imported).toContain("full-post");
+    expect(report.failed).toHaveLength(0);
+
+    const calls = createPost.mock.calls;
+    expect(calls).toHaveLength(1);
+    const input = calls[0][0] as CreatePostInput;
+    expect(input.author).toBe("Jane Doe");
+    expect(input.authorId).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(input.coverImage).toBe("/uploads/cover.jpg");
+    expect(input.visibility).toBe("private");
+    expect(input.sticky).toBe(true);
+    expect(input.seo).toEqual({ title: "Custom SEO", focusKeyphrase: "test" });
+  });
+});
+
+// ============================================================
+// Bug 3: Topological page ordering
+// Fails today because importBundle processes pages in bundle order.
+// ============================================================
+
+describe("importBundle — page topological ordering (Bug 3)", () => {
+  test("child listed before parent → parent imported first", async () => {
+    // Bundle lists child first, parent second — opposite of the required import order.
+    const json = makeValidBundleJson({
+      posts: [],
+      pages: [
+        {
+          slug: "child-page",
+          frontmatter: { title: "Child", date: "2024-01-01", parent: "parent-page" },
+          raw: "Child content.",
+        },
+        {
+          slug: "parent-page",
+          frontmatter: { title: "Parent", date: "2024-01-01" },
+          raw: "Parent content.",
+        },
+      ],
+    });
+
+    const parsed = parseImportBundle(json);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const callOrder: string[] = [];
+    const deps = makeMockDeps({
+      pageExists: mock(async () => false),
+      createPage: mock(async (input: CreatePageInput) => {
+        callOrder.push(input.slug!);
+        return makeOkResult(input.slug ?? "slug");
+      }),
+    });
+
+    const report = await importBundle(parsed.bundle, deps, "skip");
+    expect(report.imported).toHaveLength(2);
+    expect(report.failed).toHaveLength(0);
+
+    // Parent must be processed before its child
+    const parentIdx = callOrder.indexOf("parent-page");
+    const childIdx = callOrder.indexOf("child-page");
+    expect(parentIdx).toBeGreaterThanOrEqual(0);
+    expect(childIdx).toBeGreaterThanOrEqual(0);
+    expect(parentIdx).toBeLessThan(childIdx);
+  });
+
+  test("cycle in page parents → importBundle completes, both pages imported", async () => {
+    // page-a's parent is page-b, page-b's parent is page-a — mutual cycle.
+    const json = makeValidBundleJson({
+      posts: [],
+      pages: [
+        {
+          slug: "page-a",
+          frontmatter: { title: "Page A", date: "2024-01-01", parent: "page-b" },
+          raw: "Page A content.",
+        },
+        {
+          slug: "page-b",
+          frontmatter: { title: "Page B", date: "2024-01-01", parent: "page-a" },
+          raw: "Page B content.",
+        },
+      ],
+    });
+
+    const parsed = parseImportBundle(json);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const deps = makeMockDeps({
+      pageExists: mock(async () => false),
+      createPage: mock(async (input: CreatePageInput) =>
+        makeOkResult(input.slug ?? "slug")
+      ),
+    });
+
+    const report = await importBundle(parsed.bundle, deps, "skip");
+    // Cycle must not hang; both pages must be imported.
+    expect(report.imported).toHaveLength(2);
     expect(report.failed).toHaveLength(0);
   });
 });
