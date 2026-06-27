@@ -11,6 +11,7 @@
     "mod": "bun run scripts/mod.ts",
     "user:create": "bun run scripts/user-create.ts",
     "postinstall": "bun run scripts/sync-calamo.ts",
+    "backfill": "bun run scripts/backfill.ts",
     "db:content:push:pg": "drizzle-kit push --config=drizzle.content.pg.config.ts",
     "db:content:push:sqlite": "drizzle-kit push --config=drizzle.content.sqlite.config.ts"
   },
