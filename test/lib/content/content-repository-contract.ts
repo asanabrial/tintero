@@ -32,6 +32,7 @@ export interface SeedPost {
   password?: string;
   comments?: boolean;
   sticky?: boolean;
+  coverImage?: string;
 }
 
 export interface SeedPage {
@@ -106,6 +107,7 @@ const STANDARD_SEED: SeedData = {
       categories: ["tech"],
       author: "Alice",
       body: "Alpha body content. This links to [[Beta Post]].",
+      coverImage: "/uploads/alpha-cover.jpg",
     },
     {
       slug: "beta",
@@ -361,6 +363,26 @@ export function runContentRepositoryContract(
         expect(slugs).toContain("draft-one");
       });
 
+      /**
+       * coverImage projection via listPosts — parity with FilesystemContentAdapter.
+       *
+       * The FS oracle uses conditional-spread semantics: the key is absent when falsy.
+       * alpha has coverImage set; beta does NOT — key must be absent (not null).
+       */
+      test("coverImage: post with coverImage returns the value via listPosts", async () => {
+        const { posts } = await harness.repo.listPosts({ includeDrafts: false });
+        const alpha = posts.find((p) => p.slug === "alpha");
+        expect(alpha).toBeDefined();
+        expect(alpha!.coverImage).toBe("/uploads/alpha-cover.jpg");
+      });
+
+      test("coverImage: post without coverImage has coverImage === undefined via listPosts", async () => {
+        const { posts } = await harness.repo.listPosts({ includeDrafts: false });
+        const beta = posts.find((p) => p.slug === "beta");
+        expect(beta).toBeDefined();
+        expect(beta!.coverImage).toBeUndefined();
+      });
+
       test("query filter: matches post by title", async () => {
         const { posts } = await harness.repo.listPosts({
           query: "Alpha",
@@ -454,6 +476,31 @@ export function runContentRepositoryContract(
         expect(post).not.toBeNull();
         expect(post!.slug).toBe("alpha");
         expect(post!.status).toBe("published");
+      });
+
+      /**
+       * coverImage projection — parity with FilesystemContentAdapter:
+       *
+       * The FS oracle uses a conditional spread:
+       *   ...(frontmatter.coverImage ? { coverImage: frontmatter.coverImage } : {})
+       *
+       * This means:
+       *   (a) A post WITH a coverImage value must return that value.
+       *   (b) A post WITHOUT a coverImage must have the key ABSENT (undefined),
+       *       NOT null — matching the conditional-spread semantics exactly.
+       *
+       * alpha has coverImage set; beta does NOT.
+       */
+      test("coverImage: post with coverImage returns the value via getPost", async () => {
+        const post = await harness.repo.getPost("alpha");
+        expect(post).not.toBeNull();
+        expect(post!.coverImage).toBe("/uploads/alpha-cover.jpg");
+      });
+
+      test("coverImage: post without coverImage has coverImage === undefined via getPost", async () => {
+        const post = await harness.repo.getPost("beta");
+        expect(post).not.toBeNull();
+        expect(post!.coverImage).toBeUndefined();
       });
 
       test("returns null for an unknown slug", async () => {

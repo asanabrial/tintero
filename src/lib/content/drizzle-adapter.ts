@@ -1,8 +1,9 @@
 /**
  * DrizzleContentAdapter — implements ContentRepository using an injected drizzle instance.
  *
- * Uses SQLite schema objects for query building (Slice 1D targets bun:sqlite for tests;
- * the DrizzleDb = any convention keeps this driver-agnostic at the type boundary).
+ * Schema-agnostic: the caller injects the dialect-appropriate table objects
+ * (schema.sqlite or schema.pg) alongside the drizzle instance. Both table sets
+ * have identical column names, so all generated SQL is dialect-portable.
  *
  * SiteConfig and TaxonomyRegistry remain YAML-backed (delegated to loadSiteConfig and
  * loadTaxonomyRegistry, exactly as FilesystemContentAdapter does). Pass the path to the
@@ -10,15 +11,14 @@
  */
 
 import * as path from "node:path";
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { content, terms, term_relationships } from "./schema.sqlite";
+import { and, asc, count, desc, eq, gt, inArray, lte, ne, sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { renderMarkdown } from "./markdown";
 import { loadSiteConfig } from "./site-config";
 import { slugifyTag, buildTagIndex } from "./tag";
 import {
   slugifyCategory,
   joinSlug,
-  matchesCategory,
   buildCategoryIndex,
 } from "./category";
 import {
@@ -30,7 +30,7 @@ import { slugifyAuthor } from "./author";
 import { splitMore } from "./more-tag";
 import { applySearch } from "./search";
 import type { SearchableEntry } from "./search";
-import { matchesAdminStatus, computeStatusCounts } from "./schedule";
+import { computeStatusCounts } from "./schedule";
 import {
   buildLinkGraph,
   buildWikiResolver,
@@ -42,7 +42,7 @@ import type {
   UnlinkedMention,
   WikiResolver,
 } from "./links";
-import { fromEpoch, fromBool01 } from "./db-values";
+import { fromEpoch, fromBool01, toEpoch } from "./db-values";
 import type {
   ContentRepository,
   ListPostsOptions,
@@ -57,6 +57,17 @@ import type { Category, Page, Post, SiteConfig, Tag } from "./types";
 // mirroring the DrizzleCommentAdapter and factory.ts conventions.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DrizzleDb = any;
+
+/**
+ * Loosely-typed schema bundle injected by the caller.
+ * Both the sqlite-core (schema.sqlite.ts) and pg-core (schema.pg.ts) variants
+ * satisfy this type — they export identically-named table objects whose column
+ * names are kept identical by the conformance test in schema-conformance.test.ts.
+ * Using `any` here (same as DrizzleDb above) avoids dialect-specific imports at
+ * the adapter boundary; the concrete table objects come from the call site.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DrizzleContentSchema = Record<string, any>;
 
 const PAGE_SIZE = 10;
 
@@ -105,10 +116,16 @@ export class DrizzleContentAdapter implements ContentRepository {
   private readonly db: DrizzleDb;
   /** Path to the config/ directory (contains site.yaml + taxonomies.yaml). */
   private readonly configRoot: string;
+  /**
+   * Dialect-appropriate schema tables (schema.sqlite or schema.pg).
+   * Injected at construction so the adapter is not coupled to any one dialect.
+   */
+  private readonly schema: DrizzleContentSchema;
 
-  constructor(db: DrizzleDb, configRoot: string) {
+  constructor(db: DrizzleDb, configRoot: string, schema: DrizzleContentSchema) {
     this.db = db;
     this.configRoot = configRoot;
+    this.schema = schema;
   }
 
   // ------------------------------------------------------------------
@@ -121,6 +138,7 @@ export class DrizzleContentAdapter implements ContentRepository {
    * Mirrors FilesystemContentAdapter.getWikiResolver.
    */
   private async getWikiResolver(): Promise<WikiResolver> {
+    const { content } = this.schema;
     const rows: Array<{ type: string; slug: string; title: string }> =
       await this.db
         .select({
@@ -148,6 +166,7 @@ export class DrizzleContentAdapter implements ContentRepository {
   ): Promise<
     Array<{ content_id: string; taxonomy: string; slug: string; label: string }>
   > {
+    const { terms, term_relationships } = this.schema;
     if (ids.length === 0) return [];
     return this.db
       .select({
@@ -205,6 +224,7 @@ export class DrizzleContentAdapter implements ContentRepository {
    * publicOnly filtering themselves (mirrors FilesystemContentAdapter).
    */
   private async scanGraphInputs(): Promise<GraphInputNode[]> {
+    const { content } = this.schema;
     const rows: Array<{
       type: string;
       slug: string;
@@ -238,29 +258,259 @@ export class DrizzleContentAdapter implements ContentRepository {
   // ------------------------------------------------------------------
 
   async listPosts(options?: ListPostsOptions): Promise<ListPostsResult> {
+    const { content } = this.schema;
     const includeDrafts = shouldIncludeDrafts(options);
+    const pageSize = options?.pageSize ?? PAGE_SIZE;
+    const page = options?.page ?? 1;
+    const offset = (page - 1) * pageSize;
 
-    // Fetch all posts ordered by published_at DESC (epoch → date DESC order).
-    const postRows: Array<{
-      id: string;
-      slug: string;
-      title: string;
-      status: string;
-      visibility: string;
-      password: string | null;
-      body_markdown: string;
-      excerpt: string | null;
-      author_label: string | null;
-      sticky: number;
-      comments_enabled: number;
-      published_at: number;
-    }> = await this.db
-      .select()
+    // -----------------------------------------------------------------------
+    // Build SQL WHERE conditions (structural filters pushed into the DB)
+    // -----------------------------------------------------------------------
+    const conditions: SQL[] = [eq(content.type, "post")];
+
+    // includeDrafts gate: when false, exclude drafts and private posts in SQL.
+    // This mirrors the two TS guards in the old code:
+    //   if (row.status === "draft" && !includeDrafts) continue;
+    //   if (row.visibility === "private" && !includeDrafts) continue;
+    if (!includeDrafts) {
+      conditions.push(eq(content.status, "published"));
+      conditions.push(ne(content.visibility, "private"));
+    }
+
+    // Tag filter: SQL EXISTS correlated subquery through term_relationships.
+    // Produces the same match as: slugifyTag(tag) in post.tags (after slugify).
+    if (options?.tag) {
+      const tagSlug = slugifyTag(options.tag);
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM term_relationships tr
+        INNER JOIN terms t ON tr.term_id = t.id
+        WHERE tr.content_id = ${content.id}
+          AND t.taxonomy = 'tag'
+          AND t.slug = ${tagSlug}
+      )`);
+    }
+
+    // Category filter: prefix match (slug = filterSlug OR slug LIKE filterSlug/%)
+    // Reproduces matchesCategory(postPath, filterSlug) exactly:
+    //   postPath === filterSlug  → exact match (slug = ?)
+    //   postPath.startsWith(filterSlug + "/")  → LIKE ?/%
+    // Works on both SQLite and PG (LIKE is standard SQL).
+    if (options?.category) {
+      const filterSlug = joinSlug(slugifyCategory(options.category));
+      const prefixPattern = filterSlug + "/%";
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM term_relationships tr
+        INNER JOIN terms t ON tr.term_id = t.id
+        WHERE tr.content_id = ${content.id}
+          AND t.taxonomy = 'category'
+          AND (t.slug = ${filterSlug} OR t.slug LIKE ${prefixPattern})
+      )`);
+    }
+
+    // Author filter intentionally NOT pushed into SQL.
+    //
+    // The FS oracle uses: slugifyAuthor(post.author) === slugifyAuthor(options.author)
+    // where post.author is the PROJECTED value (author_label?.trim() || siteAuthorName).
+    // SQL cannot replicate this safely because:
+    //   (a) slugifyAuthor collapses spaces/hyphens/accents to "-", so "Alice Smith" stored
+    //       in author_label must match filter "alice-smith" — but LOWER(TRIM()) returns
+    //       "alice smith" ≠ "alice-smith" (false negative).
+    //   (b) NULL author_label rows are excluded by SQL comparisons (NULL ≠ anything),
+    //       but the FS adapter projects them under the site author name and INCLUDES
+    //       them when filtering by site author (false negative).
+    //
+    // When options.author is set we fall through to the TS-filter path below (same as
+    // options.query). A future optimisation can add a precomputed author_slug column and
+    // push that into SQL, but correctness requires TS projection here.
+
+    // adminStatus filter: translate the TS schedule.ts semantics into SQL.
+    // Runs after the includeDrafts gate (combined in SQL via AND).
+    // now="" semantics: ISO string comparison "" < any YYYY-MM-DD → all dates
+    // are future → all published posts are "Scheduled", none are "Published".
+    if (options?.adminStatus !== undefined) {
+      const adminStatus = options.adminStatus;
+      const now = options.now ?? "";
+
+      if (adminStatus === "draft") {
+        // Draft posts only (regardless of date).
+        conditions.push(eq(content.status, "draft"));
+      } else if (adminStatus === "published") {
+        // Published posts with published_at ≤ epoch(now) (date <= now → "Published").
+        conditions.push(eq(content.status, "published"));
+        if (now === "") {
+          // now="" → all dates are future → no post qualifies as "Published".
+          // Use 'false' (not integer 0) — PostgreSQL requires a boolean literal
+          // in a boolean context; SQLite 3.23+ accepts both. 'false' is portable.
+          conditions.push(sql`false`);
+        } else {
+          conditions.push(lte(content.published_at, toEpoch(now)));
+        }
+      } else if (adminStatus === "scheduled") {
+        // Published posts with published_at > epoch(now) (date > now → "Scheduled").
+        conditions.push(eq(content.status, "published"));
+        if (now !== "") {
+          // now="" → all published are "Scheduled" → no additional date constraint.
+          conditions.push(gt(content.published_at, toEpoch(now)));
+        }
+      }
+    }
+
+    const whereClause = and(...conditions);
+
+    // -----------------------------------------------------------------------
+    // TS-filter path — used when options.query or options.author is set
+    // -----------------------------------------------------------------------
+    // Both author and full-text search are kept in TypeScript to match the FS
+    // oracle exactly:
+    //
+    // - query: TS full-text search via applySearch (deferred ContentSearch slice)
+    // - author: TS slugify comparison using the projected author value
+    //   (author_label?.trim() || siteAuthorName). SQL cannot replicate this
+    //   because (a) slugifyAuthor collapses spaces/hyphens and (b) NULL
+    //   author_label must fall back to the site author — both invisible to SQL.
+    //
+    // The structural SQL filters (type, status, tag, category, adminStatus) still
+    // narrow the candidate set before the TS pass.
+    if (options?.query !== undefined || options?.author !== undefined) {
+      const allRows = await this.db
+        .select({
+          id: content.id,
+          slug: content.slug,
+          title: content.title,
+          status: content.status,
+          visibility: content.visibility,
+          password: content.password,
+          body_markdown: content.body_markdown,
+          excerpt: content.excerpt,
+          cover_image: content.cover_image,
+          author_label: content.author_label,
+          sticky: content.sticky,
+          comments_enabled: content.comments_enabled,
+          published_at: content.published_at,
+        })
+        .from(content)
+        .where(whereClause)
+        .orderBy(desc(content.published_at), asc(content.id));
+
+      const ids = allRows.map((r: { id: string }) => r.id);
+      const termRows = await this.fetchTermsForIds(ids);
+      const { tagsByContentId, catsByContentId } = this.buildTermMaps(
+        termRows,
+        ids
+      );
+      const wikiResolver = await this.getWikiResolver();
+      const siteConfig = await this.getSiteConfig();
+      const siteAuthorName = siteConfig.author.name?.trim() || "Unknown";
+      const bodyBySlug = new Map<string, string>();
+      let posts: Post[] = [];
+
+      for (const row of allRows) {
+        const body = row.body_markdown;
+        const { teaser, hasMore } = splitMore(body);
+        const rawExcerpt =
+          row.excerpt ?? (hasMore ? autoExcerpt(teaser) : autoExcerpt(body));
+        const passwordGated =
+          row.visibility === "password" && options?.includeDrafts !== true;
+        const excerpt = passwordGated
+          ? "This post is password protected."
+          : rawExcerpt;
+        const { html: rawHtml } = await renderMarkdown(body, { wikiResolver });
+        const html = passwordGated ? "" : rawHtml;
+        const tagLabels = tagsByContentId.get(row.id) ?? [];
+        const catSlugs = catsByContentId.get(row.id) ?? [];
+
+        const post: Post = {
+          slug: row.slug,
+          title: row.title,
+          date: epochToDateStr(row.published_at),
+          status: row.status as "published" | "draft",
+          tags: tagLabels,
+          categories: catSlugs,
+          excerpt,
+          html,
+          comments: fromBool01(row.comments_enabled),
+          sticky: fromBool01(row.sticky),
+          author: row.author_label?.trim() || siteAuthorName,
+          ...(row.cover_image ? { coverImage: row.cover_image } : {}),
+          visibility: (row.visibility ?? "public") as
+            | "public"
+            | "private"
+            | "password",
+          ...(row.visibility === "password" && row.password && !passwordGated
+            ? { password: row.password }
+            : {}),
+        };
+
+        posts.push(post);
+        bodyBySlug.set(row.slug, passwordGated ? "" : body);
+      }
+
+      // TS author filter: compare slugified projected author names exactly as FS
+      // oracle does — handles NULL fallback and multi-word/slugified names.
+      if (options.author !== undefined) {
+        const filterSlug = slugifyAuthor(options.author);
+        posts = posts.filter(
+          (p) => slugifyAuthor(p.author) === filterSlug
+        );
+      }
+
+      // TS full-text search (two-tier title/body ranking via applySearch)
+      if (options.query !== undefined) {
+        const entries: SearchableEntry[] = posts.map((post) => ({
+          post,
+          body: bodyBySlug.get(post.slug) ?? "",
+        }));
+        posts = applySearch(entries, options.query);
+      }
+
+      const total = posts.length;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize) || 1;
+      const start = (page - 1) * pageSize;
+      return { posts: posts.slice(start, start + pageSize), total, totalPages };
+    }
+
+    // -----------------------------------------------------------------------
+    // No query: full SQL pushdown — COUNT + LIMIT/OFFSET
+    // -----------------------------------------------------------------------
+
+    // COUNT(*) with the same WHERE — efficient single-pass count in the DB.
+    const [countRow] = await this.db
+      .select({ total: count() })
       .from(content)
-      .where(eq(content.type, "post"))
-      .orderBy(desc(content.published_at));
+      .where(whereClause);
 
-    const ids = postRows.map((r) => r.id);
+    const total = Number(countRow?.total ?? 0);
+    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize) || 1;
+
+    // Page query: only the requested page's rows, ordered by published_at DESC.
+    // Secondary sort by id ASC intentionally stabilises pagination where
+    // published_at values tie — the FS adapter relied on OS traversal order,
+    // which is non-deterministic. This is a deliberate improvement over FS.
+    const postRows = await this.db
+      .select({
+        id: content.id,
+        slug: content.slug,
+        title: content.title,
+        status: content.status,
+        visibility: content.visibility,
+        password: content.password,
+        body_markdown: content.body_markdown,
+        excerpt: content.excerpt,
+        cover_image: content.cover_image,
+        author_label: content.author_label,
+        sticky: content.sticky,
+        comments_enabled: content.comments_enabled,
+        published_at: content.published_at,
+      })
+      .from(content)
+      .where(whereClause)
+      .orderBy(desc(content.published_at), asc(content.id))
+      .limit(pageSize)
+      .offset(offset);
+
+    // Fetch terms only for the page's rows (not the whole corpus).
+    const ids = postRows.map((r: { id: string }) => r.id);
     const termRows = await this.fetchTermsForIds(ids);
     const { tagsByContentId, catsByContentId } = this.buildTermMaps(
       termRows,
@@ -271,34 +521,24 @@ export class DrizzleContentAdapter implements ContentRepository {
     const siteConfig = await this.getSiteConfig();
     const siteAuthorName = siteConfig.author.name?.trim() || "Unknown";
 
-    const bodyBySlug = new Map<string, string>();
-    let posts: Post[] = [];
+    const posts: Post[] = [];
 
     for (const row of postRows) {
-      // Draft / private filtering (mirrors FilesystemContentAdapter)
-      if (row.status === "draft" && !includeDrafts) continue;
-      if (row.visibility === "private" && !includeDrafts) continue;
-
       const body = row.body_markdown;
       const { teaser, hasMore } = splitMore(body);
       const rawExcerpt =
-        row.excerpt ??
-        (hasMore ? autoExcerpt(teaser) : autoExcerpt(body));
-
-      // Password-gating: public callers never see body/excerpt.
+        row.excerpt ?? (hasMore ? autoExcerpt(teaser) : autoExcerpt(body));
       const passwordGated =
         row.visibility === "password" && options?.includeDrafts !== true;
       const excerpt = passwordGated
         ? "This post is password protected."
         : rawExcerpt;
-
       const { html: rawHtml } = await renderMarkdown(body, { wikiResolver });
       const html = passwordGated ? "" : rawHtml;
-
       const tagLabels = tagsByContentId.get(row.id) ?? [];
       const catSlugs = catsByContentId.get(row.id) ?? [];
 
-      const post: Post = {
+      posts.push({
         slug: row.slug,
         title: row.title,
         date: epochToDateStr(row.published_at),
@@ -310,80 +550,25 @@ export class DrizzleContentAdapter implements ContentRepository {
         comments: fromBool01(row.comments_enabled),
         sticky: fromBool01(row.sticky),
         author: row.author_label?.trim() || siteAuthorName,
+        ...(row.cover_image ? { coverImage: row.cover_image } : {}),
         visibility: (row.visibility ?? "public") as
           | "public"
           | "private"
           | "password",
-        ...(row.visibility === "password" &&
-        row.password &&
-        !passwordGated
+        ...(row.visibility === "password" && row.password && !passwordGated
           ? { password: row.password }
           : {}),
-      };
-
-      posts.push(post);
-      bodyBySlug.set(row.slug, passwordGated ? "" : body);
+      });
     }
 
-    // Tag filter
-    if (options?.tag) {
-      const filterSlug = slugifyTag(options.tag);
-      posts = posts.filter((p) =>
-        p.tags.some((t) => slugifyTag(t) === filterSlug)
-      );
-    }
-
-    // Category filter (prefix/descendant match via matchesCategory)
-    if (options?.category) {
-      const filterSlug = joinSlug(slugifyCategory(options.category));
-      posts = posts.filter((p) =>
-        p.categories.some((c) => {
-          const cs = joinSlug(slugifyCategory(c));
-          return matchesCategory(cs, filterSlug);
-        })
-      );
-    }
-
-    // Author filter
-    if (options?.author) {
-      const filterSlug = slugifyAuthor(options.author);
-      posts = posts.filter(
-        (p) => slugifyAuthor(p.author) === filterSlug
-      );
-    }
-
-    // adminStatus filter (derived: published/draft/scheduled).
-    // Runs AFTER the includeDrafts gate. now defaults to "" exactly as FS does.
-    if (options?.adminStatus !== undefined) {
-      const adminStatus = options.adminStatus;
-      const now = options.now ?? "";
-      posts = posts.filter((p) => matchesAdminStatus(p, adminStatus, now));
-    }
-
-    // Query filter + two-tier title/body ranking (matches applySearch in search.ts).
-    if (options?.query !== undefined) {
-      const entries: SearchableEntry[] = posts.map((post) => ({
-        post,
-        body: bodyBySlug.get(post.slug) ?? "",
-      }));
-      posts = applySearch(entries, options.query);
-    }
-
-    // Pagination
-    const pageSize = options?.pageSize ?? PAGE_SIZE;
-    const total = posts.length;
-    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize) || 1;
-    const page = options?.page ?? 1;
-    const start = (page - 1) * pageSize;
-    const paginated = posts.slice(start, start + pageSize);
-
-    return { posts: paginated, total, totalPages };
+    return { posts, total, totalPages };
   }
 
   async getPost(
     slug: string,
     options?: ListPostsOptions
   ): Promise<Post | null> {
+    const { content } = this.schema;
     const includeDrafts = shouldIncludeDrafts(options);
 
     const rows: Array<{
@@ -395,6 +580,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       password: string | null;
       body_markdown: string;
       excerpt: string | null;
+      cover_image: string | null;
       author_label: string | null;
       sticky: number;
       comments_enabled: number;
@@ -439,6 +625,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       comments: fromBool01(row.comments_enabled),
       sticky: fromBool01(row.sticky),
       author: row.author_label?.trim() || siteAuthorName,
+      ...(row.cover_image ? { coverImage: row.cover_image } : {}),
       visibility: (row.visibility ?? "public") as
         | "public"
         | "private"
@@ -450,56 +637,65 @@ export class DrizzleContentAdapter implements ContentRepository {
   }
 
   async listPages(options?: ListPagesOptions): Promise<ListPagesResult> {
+    const { content } = this.schema;
     const includeDrafts = shouldIncludeDrafts(options);
+    const pageSize = options?.pageSize ?? PAGE_SIZE;
+    const page = options?.page ?? 1;
+    const offset = (page - 1) * pageSize;
 
-    const pageRows: Array<{
-      slug: string;
-      title: string;
-      status: string;
-      body_markdown: string;
-      excerpt: string | null;
-      parent_id: string | null;
-      menu_order: number;
-      published_at: number;
-    }> = await this.db
-      .select()
-      .from(content)
-      .where(eq(content.type, "page"));
-
-    const wikiResolver = await this.getWikiResolver();
-    const bodyBySlug = new Map<string, string>();
-    let pages: Page[] = [];
-
-    for (const row of pageRows) {
-      if (row.status === "draft" && !includeDrafts) continue;
-
-      const body = row.body_markdown;
-      const excerpt = row.excerpt ?? autoExcerpt(body);
-      const { html } = await renderMarkdown(body, { wikiResolver });
-
-      pages.push({
-        slug: row.slug,
-        title: row.title,
-        date: epochToDateStr(row.published_at),
-        status: row.status as "published" | "draft",
-        excerpt,
-        html,
-        menuOrder: row.menu_order ?? 0,
-        ...(row.parent_id ? { parent: row.parent_id } : {}),
-      });
-      bodyBySlug.set(row.slug, body);
+    // Build SQL WHERE conditions
+    const conditions: SQL[] = [eq(content.type, "page")];
+    if (!includeDrafts) {
+      conditions.push(eq(content.status, "published"));
     }
+    const whereClause = and(...conditions);
 
-    // Sort by menuOrder ascending, then title ascending (mirrors FS adapter)
-    pages.sort((a, b) => {
-      const orderDiff = (a.menuOrder ?? 0) - (b.menuOrder ?? 0);
-      if (orderDiff !== 0) return orderDiff;
-      return a.title.localeCompare(b.title);
-    });
+    // Pages are sorted by menuOrder ASC, then title ASC (mirrors FS adapter).
+    // SQL ORDER BY menu_order ASC, title ASC is equivalent for ASCII titles.
+    const orderBy = [asc(content.menu_order), asc(content.title)] as const;
 
-    // Query filter (mirrors FilesystemContentAdapter.listPages)
+    // -----------------------------------------------------------------------
+    // Query / full-text case — structural SQL filter applied, TS search kept
+    // -----------------------------------------------------------------------
     if (options?.query !== undefined) {
-      const entries: SearchableEntry[] = pages.map((p) => ({
+      const allRows = await this.db
+        .select({
+          slug: content.slug,
+          title: content.title,
+          status: content.status,
+          body_markdown: content.body_markdown,
+          excerpt: content.excerpt,
+          parent_id: content.parent_id,
+          menu_order: content.menu_order,
+          published_at: content.published_at,
+        })
+        .from(content)
+        .where(whereClause)
+        .orderBy(...orderBy);
+
+      const wikiResolver = await this.getWikiResolver();
+      const bodyBySlug = new Map<string, string>();
+      const allPages: Page[] = [];
+
+      for (const row of allRows) {
+        const body = row.body_markdown;
+        const excerpt = row.excerpt ?? autoExcerpt(body);
+        const { html } = await renderMarkdown(body, { wikiResolver });
+        allPages.push({
+          slug: row.slug,
+          title: row.title,
+          date: epochToDateStr(row.published_at),
+          status: row.status as "published" | "draft",
+          excerpt,
+          html,
+          menuOrder: row.menu_order ?? 0,
+          ...(row.parent_id ? { parent: row.parent_id } : {}),
+        });
+        bodyBySlug.set(row.slug, body);
+      }
+
+      // TS full-text search (same applySearch path as FilesystemContentAdapter)
+      const entries: SearchableEntry[] = allPages.map((p) => ({
         post: {
           slug: p.slug,
           title: p.title,
@@ -517,8 +713,8 @@ export class DrizzleContentAdapter implements ContentRepository {
         body: bodyBySlug.get(p.slug) ?? "",
       }));
       const ranked = applySearch(entries, options.query);
-      pages = ranked.map((post) => {
-        const original = pages.find((p) => p.slug === post.slug);
+      const rankedPages = ranked.map((post) => {
+        const original = allPages.find((p) => p.slug === post.slug);
         return {
           slug: post.slug,
           title: post.title,
@@ -531,20 +727,69 @@ export class DrizzleContentAdapter implements ContentRepository {
           ...(original?.seo ? { seo: original.seo } : {}),
         };
       });
+
+      const total = rankedPages.length;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize) || 1;
+      const start = (page - 1) * pageSize;
+      return { pages: rankedPages.slice(start, start + pageSize), total, totalPages };
     }
 
-    const pageSize = options?.pageSize ?? PAGE_SIZE;
-    const total = pages.length;
+    // -----------------------------------------------------------------------
+    // No query: full SQL pushdown — COUNT + LIMIT/OFFSET
+    // -----------------------------------------------------------------------
+
+    const [countRow] = await this.db
+      .select({ total: count() })
+      .from(content)
+      .where(whereClause);
+
+    const total = Number(countRow?.total ?? 0);
     const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize) || 1;
-    const page = options?.page ?? 1;
-    const start = (page - 1) * pageSize;
-    return { pages: pages.slice(start, start + pageSize), total, totalPages };
+
+    const pageRows = await this.db
+      .select({
+        slug: content.slug,
+        title: content.title,
+        status: content.status,
+        body_markdown: content.body_markdown,
+        excerpt: content.excerpt,
+        parent_id: content.parent_id,
+        menu_order: content.menu_order,
+        published_at: content.published_at,
+      })
+      .from(content)
+      .where(whereClause)
+      .orderBy(...orderBy)
+      .limit(pageSize)
+      .offset(offset);
+
+    const wikiResolver = await this.getWikiResolver();
+    const pages: Page[] = [];
+
+    for (const row of pageRows) {
+      const body = row.body_markdown;
+      const excerpt = row.excerpt ?? autoExcerpt(body);
+      const { html } = await renderMarkdown(body, { wikiResolver });
+      pages.push({
+        slug: row.slug,
+        title: row.title,
+        date: epochToDateStr(row.published_at),
+        status: row.status as "published" | "draft",
+        excerpt,
+        html,
+        menuOrder: row.menu_order ?? 0,
+        ...(row.parent_id ? { parent: row.parent_id } : {}),
+      });
+    }
+
+    return { pages, total, totalPages };
   }
 
   async getPage(
     slug: string,
     options?: { includeDrafts?: boolean }
   ): Promise<Page | null> {
+    const { content } = this.schema;
     const includeDrafts = shouldIncludeDrafts(options);
 
     const rows: Array<{
@@ -584,6 +829,7 @@ export class DrizzleContentAdapter implements ContentRepository {
   }
 
   async listPostStatusCounts(now: string): Promise<StatusCounts> {
+    const { content } = this.schema;
     // Include ALL posts (no draft filter) — admin-facing counts, mirrors FS adapter.
     const rows: Array<{
       slug: string;
@@ -620,6 +866,7 @@ export class DrizzleContentAdapter implements ContentRepository {
   }
 
   async listTags(): Promise<Tag[]> {
+    const { content, terms, term_relationships } = this.schema;
     // NODE_ENV fallback mirrors FilesystemContentAdapter.listTags (no options arg)
     const includeDrafts = shouldIncludeDrafts();
 
@@ -680,6 +927,7 @@ export class DrizzleContentAdapter implements ContentRepository {
   }
 
   async listCategories(): Promise<Category[]> {
+    const { content, terms, term_relationships } = this.schema;
     // NODE_ENV fallback mirrors FilesystemContentAdapter.listCategories
     const includeDrafts = shouldIncludeDrafts();
 

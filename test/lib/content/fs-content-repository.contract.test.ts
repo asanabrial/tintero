@@ -60,6 +60,7 @@ function postToMarkdown(post: SeedPost): string {
   if (post.excerpt !== undefined) fm.excerpt = post.excerpt;
   if (post.visibility !== undefined) fm.visibility = post.visibility;
   if (post.password !== undefined) fm.password = post.password;
+  if (post.coverImage !== undefined) fm.coverImage = post.coverImage;
 
   return `---\n${buildFrontmatter(fm)}\n---\n\n${post.body ?? ""}\n`;
 }
