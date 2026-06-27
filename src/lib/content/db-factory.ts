@@ -94,6 +94,25 @@ export function getContentDb(): DrizzleDb {
 }
 
 /**
+ * Returns the dialect-appropriate drizzle schema tables module.
+ *
+ * Pass the returned object as the third argument to DrizzleContentAdapter so
+ * the adapter uses the correct table objects (PgTable vs SQLiteTable) without
+ * hard-coding the dialect at its import boundary. Must be called with the same
+ * DATABASE_DIALECT as getContentDb().
+ */
+export function getContentSchema(): typeof pgSchema | typeof sqliteSchema {
+  const dialect = process.env.DATABASE_DIALECT as Dialect | undefined;
+  switch (dialect) {
+    case "postgresql":
+      return pgSchema;
+    case "sqlite":
+    default:
+      return sqliteSchema;
+  }
+}
+
+/**
  * Reset the memoised singleton.
  *
  * ONLY for use in tests — call this in beforeEach / afterEach to isolate

@@ -43,8 +43,8 @@ export function getAdapter(): ContentRepository {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { DrizzleContentAdapter } = require("./drizzle-adapter") as typeof import("./drizzle-adapter");
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { getContentDb } = require("./db-factory") as typeof import("./db-factory");
-      _adapter = new DrizzleContentAdapter(getContentDb(), CONFIG_ROOT);
+      const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
+      _adapter = new DrizzleContentAdapter(getContentDb(), CONFIG_ROOT, getContentSchema());
     } else {
       _adapter = new FilesystemContentAdapter(CONTENT_ROOT);
     }

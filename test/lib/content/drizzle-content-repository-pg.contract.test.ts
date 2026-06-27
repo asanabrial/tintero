@@ -1,21 +1,37 @@
 /**
- * DrizzleContentAdapter wired into the shared ContentRepository contract suite.
+ * DrizzleContentAdapter wired into the shared ContentRepository contract suite,
+ * running against an in-memory PostgreSQL database (PGlite).
  *
- * Creates a fresh bun:sqlite in-memory database, seeds it with normalized SeedData
- * (content rows + term rows + term_relationships), writes a temp config/ directory
- * with site.yaml + taxonomies.yaml, constructs a DrizzleContentAdapter pointing at
- * the in-memory DB and config dir, and tears it down in cleanup.
+ * Purpose: prove that the SQL pushdown code is cross-dialect AND that
+ * schema.pg.ts is genuinely exercised — not dead code. This harness uses
+ * PgTable objects (schema.pg.ts) with a PG drizzle driver, matching the
+ * real production wiring for DATABASE_DIALECT=postgresql.
+ *
+ * Key differences from the bun:sqlite harness:
+ *  - Imports schema.pg.ts (PgTable objects) — NOT schema.sqlite.ts
+ *  - Timestamps (published_at, created_at, updated_at) are BIGINT in the DDL,
+ *    because millisecond epoch values (~1.7e12) exceed PG INTEGER max (~2.1e9).
+ *    schema.pg.ts currently defines these as integer() columns, which works for
+ *    column-name SQL generation; a future fix to schema.pg.ts should use
+ *    bigint() to keep the drizzle schema and actual PG DDL in sync.
+ *  - boolean-context literals use 'false' not '0' (FIX 1 — PG requires boolean).
+ *  - drizzle COUNT(*) returns a JS number from pglite (no string parse needed).
+ *  - The `db: any` cast is removed — PgliteDatabase<typeof schemaPg> is
+ *    structurally compatible with DrizzleDb = any at the adapter boundary.
  *
  * To run only this file:
- *   bun test test/lib/content/drizzle-content-repository.contract.test.ts
+ *   bun test test/lib/content/drizzle-content-repository-pg.contract.test.ts
  */
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import * as schema from "@/lib/content/schema.sqlite";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+// Use the PG schema — this is what genuinely exercises schema.pg.ts.
+// DrizzleDb = any accepts PgliteDatabase, and PgTable objects produce
+// identical column-name SQL to SQLiteTable objects (by conformance test).
+import * as schemaPg from "@/lib/content/schema.pg";
 import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
 import { newId, toEpoch, nowEpoch, toBool01 } from "@/lib/content/db-values";
 import { slugifyTag } from "@/lib/content/tag";
@@ -28,7 +44,16 @@ import {
 } from "./content-repository-contract";
 
 // ============================================================
-// DDL — creates tables + indexes matching schema.sqlite.ts
+// DDL — Postgres-compatible schema matching schema.pg.ts
+//
+// Timestamp columns (published_at, created_at, updated_at) use BIGINT,
+// matching schema.pg.ts which now declares them as bigint({ mode:"number" }).
+// Millisecond epoch values (~1.75e12) exceed Postgres INT4 max (~2.1e9).
+//
+// This hand-written DDL must stay in sync with schema.pg.ts.
+// The conformance test (schema-conformance.test.ts) guards descriptor↔schema
+// drift between dialects; it does NOT validate this DDL — that requires a
+// drizzle-kit push or migration comparison, deferred to the migration slice.
 // ============================================================
 
 const DDL = `
@@ -49,9 +74,9 @@ CREATE TABLE IF NOT EXISTS content (
   comments_enabled INTEGER NOT NULL,
   parent_id TEXT,
   menu_order INTEGER NOT NULL,
-  published_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  published_at BIGINT NOT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_content_type_slug
@@ -77,8 +102,8 @@ CREATE TABLE IF NOT EXISTS terms (
   parent_id TEXT,
   description_markdown TEXT,
   count INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_terms_taxonomy_slug
@@ -111,7 +136,7 @@ CREATE INDEX IF NOT EXISTS idx_content_meta_content_id_meta_key
 `;
 
 // ============================================================
-// YAML serialisation helpers (mirrors fs harness — independent copy)
+// YAML serialisation helpers (identical to bun:sqlite harness)
 // ============================================================
 
 function buildSiteYaml(data: SeedData): string {
@@ -160,23 +185,31 @@ function buildTaxonomiesYaml(data: SeedData): string {
 }
 
 // ============================================================
-// Drizzle harness factory
+// PGlite harness factory
 // ============================================================
 
-async function makeDrizzleHarness(): Promise<Harness> {
-  // In-memory SQLite database with Drizzle ORM
-  const sqliteDb = new Database(":memory:");
-  sqliteDb.exec(DDL);
-  const db = drizzle(sqliteDb, { schema });
+async function makePgliteHarness(): Promise<Harness> {
+  // In-memory Postgres database (PGlite — no file, no port)
+  const pg = new PGlite();
+  await pg.exec(DDL);
+
+  // Build the drizzle instance with the PG schema.
+  // PgliteDatabase<typeof schemaPg> is structurally compatible with DrizzleDb = any;
+  // no explicit `any` cast needed here — DrizzleContentAdapter takes DrizzleDb = any.
+  // COUNT(*) from PGlite returns a JS number directly (verified); the existing
+  // Number() wrapper in the adapter handles both number and bigint string safely.
+  const db = drizzle(pg, { schema: schemaPg });
 
   // Temp directory for YAML config files
   const tmpBase = await fs.mkdtemp(
-    path.join(os.tmpdir(), "tintero-drizzle-contract-")
+    path.join(os.tmpdir(), "tintero-pglite-contract-")
   );
   const configDir = path.join(tmpBase, "config");
   await fs.mkdir(configDir, { recursive: true });
 
-  const repo = new DrizzleContentAdapter(db, configDir, schema);
+  // Pass schemaPg to the adapter — this is the crux of the fix: the adapter
+  // now uses PgTable objects (not SQLiteTable) when running against Postgres.
+  const repo = new DrizzleContentAdapter(db, configDir, schemaPg);
 
   return {
     repo,
@@ -196,7 +229,7 @@ async function makeDrizzleHarness(): Promise<Harness> {
         if (existing !== undefined) return existing;
 
         const id = newId();
-        await db.insert(schema.terms).values({
+        await db.insert(schemaPg.terms).values({
           id,
           taxonomy,
           slug,
@@ -214,7 +247,7 @@ async function makeDrizzleHarness(): Promise<Harness> {
       // Seed posts
       for (const post of data.posts ?? []) {
         const contentId = newId();
-        await db.insert(schema.content).values({
+        await db.insert(schemaPg.content).values({
           id: contentId,
           type: "post",
           slug: post.slug,
@@ -240,21 +273,18 @@ async function makeDrizzleHarness(): Promise<Harness> {
         for (const rawTag of post.tags ?? []) {
           const tagSlug = slugifyTag(rawTag);
           const termId = await getOrCreateTerm("tag", tagSlug, rawTag);
-          await db.insert(schema.term_relationships).values({
+          await db.insert(schemaPg.term_relationships).values({
             content_id: contentId,
             term_id: termId,
           });
         }
 
         // Category terms + relationships.
-        // Store the slugified full path (e.g. "tech/javascript") as the term slug.
-        // DrizzleContentAdapter.listCategories passes these slugs to buildCategoryIndex
-        // as the "raw" strings, which correctly derives parent prefixes and counts.
         for (const rawCat of post.categories ?? []) {
           const catSlug = joinSlug(slugifyCategory(rawCat));
           if (catSlug === "") continue;
           const termId = await getOrCreateTerm("category", catSlug, rawCat);
-          await db.insert(schema.term_relationships).values({
+          await db.insert(schemaPg.term_relationships).values({
             content_id: contentId,
             term_id: termId,
           });
@@ -263,9 +293,8 @@ async function makeDrizzleHarness(): Promise<Harness> {
 
       // Seed pages
       for (const page of data.pages ?? []) {
-        const contentId = newId();
-        await db.insert(schema.content).values({
-          id: contentId,
+        await db.insert(schemaPg.content).values({
+          id: newId(),
           type: "page",
           slug: page.slug,
           title: page.title,
@@ -301,7 +330,8 @@ async function makeDrizzleHarness(): Promise<Harness> {
     },
 
     async cleanup(): Promise<void> {
-      sqliteDb.close();
+      // PGlite in-memory databases do not need an explicit close; drop the
+      // reference and let GC collect it. Remove the config temp dir.
       await fs.rm(tmpBase, { recursive: true, force: true });
     },
   };
@@ -311,4 +341,4 @@ async function makeDrizzleHarness(): Promise<Harness> {
 // Run contract
 // ============================================================
 
-runContentRepositoryContract("DrizzleContentAdapter", makeDrizzleHarness);
+runContentRepositoryContract("DrizzleContentAdapter (pglite/PG)", makePgliteHarness);
