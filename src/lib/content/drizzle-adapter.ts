@@ -43,6 +43,7 @@ import type {
   WikiResolver,
 } from "./links";
 import { fromEpoch, fromBool01, toEpoch } from "./db-values";
+import { reassembleSeo } from "./seo-meta";
 import type {
   ContentRepository,
   ListPostsOptions,
@@ -212,23 +213,23 @@ export class DrizzleContentAdapter implements ContentRepository {
         )
       );
 
-    const seoMap = new Map<string, PostSeo>();
-    const BOOLEAN_SEO_FIELDS = new Set(["noindex", "cornerstone"]);
-
+    // Group rows by content_id, then reassemble each group via the shared
+    // reassembleSeo helper (seo-meta.ts) to avoid duplicating the bool-parse logic.
+    const rowsByContentId = new Map<
+      string,
+      Array<{ meta_key: string; meta_value: string | null }>
+    >();
     for (const row of rows) {
-      if (row.meta_value === null) continue;
-      const field = row.meta_key.slice(4); // strip "seo." prefix
-
-      if (!seoMap.has(row.content_id)) {
-        seoMap.set(row.content_id, {});
+      if (!rowsByContentId.has(row.content_id)) {
+        rowsByContentId.set(row.content_id, []);
       }
-      const seo = seoMap.get(row.content_id)!;
+      rowsByContentId.get(row.content_id)!.push(row);
+    }
 
-      if (BOOLEAN_SEO_FIELDS.has(field)) {
-        (seo as Record<string, unknown>)[field] = row.meta_value === "true";
-      } else {
-        (seo as Record<string, unknown>)[field] = row.meta_value;
-      }
+    const seoMap = new Map<string, PostSeo>();
+    for (const [contentId, contentRows] of rowsByContentId) {
+      const seo = reassembleSeo(contentRows);
+      if (seo) seoMap.set(contentId, seo);
     }
 
     return seoMap;
@@ -1001,6 +1002,9 @@ export class DrizzleContentAdapter implements ContentRepository {
   async listTags(): Promise<Tag[]> {
     const { content, terms, term_relationships } = this.schema;
     // NODE_ENV fallback mirrors FilesystemContentAdapter.listTags (no options arg)
+    // NOTE: terms.count is maintained on write (reconcileTermCounts in DrizzleContentWriter)
+    // but not yet read here — counts are derived from term_relationships joins instead.
+    // A future O(terms) optimisation may read terms.count directly to skip the join.
     const includeDrafts = shouldIncludeDrafts();
 
     const postRows: Array<{
