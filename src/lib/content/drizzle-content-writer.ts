@@ -48,6 +48,10 @@ import { slugifyTag } from "./tag";
 import { slugifyCategory, joinSlug } from "./category";
 import { SEO_FIELDS, seoMetaKey, seoMetaValue, reassembleSeo } from "./seo-meta";
 import { cleanSeo } from "./fs-writer";
+import {
+  serializePostMarkdown,
+  type SerializableFrontmatter,
+} from "./markdown-serialize";
 import type {
   ContentWriter,
   CreatePostInput,
@@ -382,8 +386,32 @@ export class DrizzleContentWriter implements ContentWriter {
     // Reconcile term counts for affected terms
     await this.reconcileTermCounts(affectedTermIds);
 
-    // Best-effort revision capture
-    await this.captureRevision("post", finalSlug, input.body, rev);
+    // Build the full serialized markdown for revision capture — mirrors FsContentWriter.createPost.
+    // Slug is pinned in frontmatter only when it differs from the title-derived slug
+    // (matches FS: needsExplicitSlug = finalSlug !== slugifyTitle(title)).
+    const inferredFromTitle = slugifyTitle(parseResult.data.title);
+    const needsExplicitSlug = finalSlug !== inferredFromTitle;
+    const fm: SerializableFrontmatter = {
+      title: parseResult.data.title,
+      ...(needsExplicitSlug ? { slug: finalSlug } : {}),
+      date: parseResult.data.date,
+      status: parseResult.data.status,
+      ...(parseResult.data.excerpt ? { excerpt: parseResult.data.excerpt } : {}),
+      ...(parseResult.data.coverImage ? { coverImage: parseResult.data.coverImage } : {}),
+      tags: parseResult.data.tags,
+      categories: parseResult.data.categories,
+      comments: parseResult.data.comments,
+      ...(parseResult.data.author ? { author: parseResult.data.author } : {}),
+      ...(input.sticky ? { sticky: true } : {}),
+      ...(parseResult.data.authorId ? { authorId: parseResult.data.authorId } : {}),
+      ...(input.visibility && input.visibility !== "public" ? { visibility: input.visibility } : {}),
+      ...(input.visibility === "password" && input.password ? { password: input.password } : {}),
+      ...(cleanSeo(parseResult.data.seo) ? { seo: cleanSeo(parseResult.data.seo) } : {}),
+    };
+    const rawContent = serializePostMarkdown(fm, input.body);
+
+    // Best-effort revision capture — AFTER all writes succeed; failures swallowed.
+    await this.captureRevision("post", finalSlug, rawContent, rev);
 
     return { ok: true, slug: finalSlug };
   }
@@ -554,8 +582,36 @@ export class DrizzleContentWriter implements ContentWriter {
     const allAffected = [...new Set([...oldTermIds, ...newTermIds])];
     await this.reconcileTermCounts(allAffected);
 
-    // Best-effort revision
-    await this.captureRevision("post", newSlug, input.body, rev);
+    // Build the full serialized markdown for revision capture — mirrors FsContentWriter.updatePost.
+    // Slug is pinned only when it differs from what deriveSlug would infer from the (new) title.
+    // This matches FS behaviour: for an unchanged slug with an unchanged title, slug is omitted
+    // (rawData from disk had no explicit slug); for a changed slug or title-derived divergence,
+    // slug is pinned explicitly.
+    const inferredFromTitle = slugifyTitle(input.title);
+    const shouldPinSlug = newSlug !== inferredFromTitle;
+    const updateFm: SerializableFrontmatter = {
+      title: parseResult.data.title,
+      ...(shouldPinSlug ? { slug: newSlug } : {}),
+      date: parseResult.data.date,
+      status: parseResult.data.status,
+      ...(parseResult.data.excerpt ? { excerpt: parseResult.data.excerpt } : {}),
+      ...(parseResult.data.coverImage ? { coverImage: parseResult.data.coverImage } : {}),
+      tags: parseResult.data.tags,
+      categories: parseResult.data.categories,
+      comments: parseResult.data.comments,
+      ...(parseResult.data.author ? { author: parseResult.data.author } : {}),
+      ...(input.sticky ? { sticky: true } : {}),
+      // authorId: preserve from the existing DB row (mirrors FsContentWriter which spreads
+      // existing.rawData and thus keeps the authorId from the original write).
+      ...(existingAuthorId ? { authorId: existingAuthorId } : {}),
+      ...(input.visibility && input.visibility !== "public" ? { visibility: input.visibility } : {}),
+      ...(input.visibility === "password" && input.password ? { password: input.password } : {}),
+      ...(cleanSeo(parseResult.data.seo) ? { seo: cleanSeo(parseResult.data.seo) } : {}),
+    };
+    const updateRawContent = serializePostMarkdown(updateFm, input.body);
+
+    // Best-effort revision — AFTER all writes succeed; failures swallowed.
+    await this.captureRevision("post", newSlug, updateRawContent, rev);
 
     return { ok: true, slug: newSlug };
   }
@@ -724,8 +780,35 @@ export class DrizzleContentWriter implements ContentWriter {
     slug: string,
     status: "published" | "draft"
   ): Promise<WriteResult> {
-    const rows: Array<{ id: string }> = await this.db
-      .select({ id: this.schema.content.id })
+    // Select the full post row upfront — all fields needed to build the revision fm.
+    const rows: Array<{
+      id: string;
+      title: string;
+      body_markdown: string;
+      excerpt: string | null;
+      cover_image: string | null;
+      author_label: string | null;
+      author_id: string | null;
+      sticky: number;
+      comments_enabled: number;
+      visibility: string;
+      password: string | null;
+      published_at: number;
+    }> = await this.db
+      .select({
+        id: this.schema.content.id,
+        title: this.schema.content.title,
+        body_markdown: this.schema.content.body_markdown,
+        excerpt: this.schema.content.excerpt,
+        cover_image: this.schema.content.cover_image,
+        author_label: this.schema.content.author_label,
+        author_id: this.schema.content.author_id,
+        sticky: this.schema.content.sticky,
+        comments_enabled: this.schema.content.comments_enabled,
+        visibility: this.schema.content.visibility,
+        password: this.schema.content.password,
+        published_at: this.schema.content.published_at,
+      })
       .from(this.schema.content)
       .where(
         and(
@@ -740,11 +823,84 @@ export class DrizzleContentWriter implements ContentWriter {
       return { ok: false, error: { kind: "post_not_found", slug } };
     }
 
+    const r = rows[0];
     const now = nowEpoch();
     await this.db
       .update(this.schema.content)
       .set({ status, updated_at: now })
-      .where(eq(this.schema.content.id, rows[0].id));
+      .where(eq(this.schema.content.id, r.id));
+
+    // Build serialized markdown for revision capture — mirrors FsContentWriter.setPostStatus
+    // which does: mergedData = { ...existing.rawData, status }; captureRevision(rawContent).
+    // Fetch terms and SEO to reconstruct the full fm for the new-status revision.
+    const termRows: Array<{ taxonomy: string; label: string }> = await this.db
+      .select({
+        taxonomy: this.schema.terms.taxonomy,
+        label: this.schema.terms.label,
+      })
+      .from(this.schema.term_relationships)
+      .innerJoin(
+        this.schema.terms,
+        eq(this.schema.term_relationships.term_id, this.schema.terms.id)
+      )
+      .where(eq(this.schema.term_relationships.content_id, r.id));
+
+    const tags = termRows
+      .filter((t) => t.taxonomy === "tag")
+      .map((t) => t.label);
+    const categories = termRows
+      .filter((t) => t.taxonomy === "category")
+      .map((t) => t.label);
+
+    const metaRows: Array<{ meta_key: string; meta_value: string | null }> =
+      await this.db
+        .select({
+          meta_key: this.schema.content_meta.meta_key,
+          meta_value: this.schema.content_meta.meta_value,
+        })
+        .from(this.schema.content_meta)
+        .where(
+          and(
+            eq(this.schema.content_meta.content_id, r.id),
+            like(this.schema.content_meta.meta_key, "seo.%")
+          )
+        );
+    const seo = reassembleSeo(metaRows);
+
+    // Slug is pinned only when it differs from the title-derived slug — same logic
+    // as createPost, so the serialized fm matches what FS would produce from readRaw.
+    const inferredFromTitle = slugifyTitle(r.title);
+    const needsExplicitSlug = slug !== inferredFromTitle;
+    const storedVisibility = r.visibility ?? "public";
+    const fm: SerializableFrontmatter = {
+      title: r.title,
+      ...(needsExplicitSlug ? { slug } : {}),
+      date: fromEpoch(r.published_at).toISOString().slice(0, 10),
+      status,
+      ...(r.excerpt ? { excerpt: r.excerpt } : {}),
+      ...(r.cover_image ? { coverImage: r.cover_image } : {}),
+      tags,
+      categories,
+      comments: fromBool01(r.comments_enabled),
+      ...(r.author_label ? { author: r.author_label } : {}),
+      ...(fromBool01(r.sticky) ? { sticky: true } : {}),
+      ...(r.author_id ? { authorId: r.author_id } : {}),
+      ...(storedVisibility !== "public"
+        ? { visibility: storedVisibility as "private" | "password" }
+        : {}),
+      ...(storedVisibility === "password" && r.password
+        ? { password: r.password }
+        : {}),
+      ...(cleanSeo(seo) ? { seo: cleanSeo(seo) } : {}),
+    };
+    // Prepend "\n" to the body to match gray-matter's content field:
+    // gray-matter returns the blank-line separator as part of the body (i.e.
+    // "\n" + body_markdown), so re-serializing with just body_markdown would produce
+    // one fewer blank line than the FS writer produces after a readRaw round-trip.
+    const rawContent = serializePostMarkdown(fm, "\n" + r.body_markdown);
+
+    // Best-effort revision capture — AFTER the UPDATE succeeds; failures swallowed.
+    await this.captureRevision("post", slug, rawContent, undefined);
 
     return { ok: true, slug };
   }
