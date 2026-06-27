@@ -25,6 +25,7 @@ import { eq, sql } from "drizzle-orm";
 import { newId, toEpoch, nowEpoch, toBool01 } from "./db-values";
 import { slugifyTag } from "./tag";
 import { slugifyCategory, joinSlug } from "./category";
+import { SEO_FIELDS, seoMetaKey, seoMetaValue } from "./seo-meta";
 import type { ContentRepository, RawBodyReader } from "./ports";
 import type { PostSeo } from "./types";
 
@@ -71,30 +72,6 @@ export interface BackfillReport {
   relationships: number;
   /** Number of SEO content_meta key-value pairs processed. */
   meta: number;
-}
-
-// ---------------------------------------------------------------------------
-// SEO field map — PostSeo keys → meta_key strings stored in content_meta
-// ---------------------------------------------------------------------------
-
-const SEO_FIELDS: ReadonlyArray<keyof PostSeo> = [
-  "title",
-  "metaDescription",
-  "focusKeyphrase",
-  "canonical",
-  "noindex",
-  "ogImage",
-  "cornerstone",
-];
-
-function seoMetaKey(field: keyof PostSeo): string {
-  return `seo.${field}`;
-}
-
-function seoMetaValue(value: string | boolean | undefined): string | null {
-  if (value === undefined) return null;
-  if (typeof value === "boolean") return value ? "true" : "false";
-  return String(value);
 }
 
 // ---------------------------------------------------------------------------

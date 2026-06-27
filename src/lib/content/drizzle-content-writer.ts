@@ -1,0 +1,767 @@
+/**
+ * DrizzleContentWriter — write-side DB adapter for posts.
+ *
+ * Implements ContentWriter using an injected drizzle instance + schema bundle.
+ * Schema-agnostic: both schema.sqlite.ts and schema.pg.ts are accepted.
+ *
+ * Slice scope (Phase 5 Slice B):
+ *   - CRUD core: createPost / updatePost / deletePost / readRaw / setPostStatus
+ *   - Trash operations: NOT implemented (throw "Phase 5 Slice C")
+ *   - Pages: NOT implemented (separate slice)
+ *
+ * Atomicity decision:
+ *   drizzle bun-sqlite uses a SYNCHRONOUS transaction callback (db.transaction(cb))
+ *   which is incompatible with the async writes required here. drizzle postgres uses
+ *   an async callback. Wrapping both in a single shared async transaction helper is
+ *   impractical without per-driver branching. Decision: sequential writes (no
+ *   transactions) consistent with backfill.ts. This means a mid-write failure can
+ *   leave the DB in a partially-written state (e.g. content row inserted but terms
+ *   not yet written). Acceptable for a low-frequency blog writer; revisit in a
+ *   future slice that adds per-driver transaction wrappers.
+ *
+ * ADR-7 note:
+ *   The FS writer preserves unknown frontmatter keys via a rawData spread (ADR-7).
+ *   The DB has no concept of arbitrary extra keys — only the schema columns exist.
+ *   readRaw returns { frontmatter, rawData } where both fields contain the same
+ *   reconstructed object from the DB row. The rawData shape matches the admin
+ *   action layer's expected keys (title, date, status, tags, categories, etc.).
+ */
+
+import { and, eq, inArray, isNull, like, ne, sql } from "drizzle-orm";
+import {
+  PostFrontmatterSchema,
+} from "./schema";
+import {
+  isSafeSlug,
+  resolveCollisionSlug,
+  slugifyTitle,
+} from "./slug";
+import {
+  newId,
+  nowEpoch,
+  toEpoch,
+  fromEpoch,
+  toBool01,
+  fromBool01,
+} from "./db-values";
+import { slugifyTag } from "./tag";
+import { slugifyCategory, joinSlug } from "./category";
+import { SEO_FIELDS, seoMetaKey, seoMetaValue, reassembleSeo } from "./seo-meta";
+import { cleanSeo } from "./fs-writer";
+import type {
+  ContentWriter,
+  CreatePostInput,
+  UpdatePostInput,
+  WriteResult,
+  TrashedItemInfo,
+} from "./ports";
+import type { PostSeo } from "./types";
+import type { RevisionContext } from "../revisions/types";
+import type { RevisionRepository } from "../revisions/ports";
+import { getRevisionRepository } from "../revisions/factory";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DrizzleDb = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DrizzleContentSchema = Record<string, any>;
+
+export class DrizzleContentWriter implements ContentWriter {
+  private readonly db: DrizzleDb;
+  private readonly schema: DrizzleContentSchema;
+  private readonly revisions: () => RevisionRepository;
+
+  constructor(
+    db: DrizzleDb,
+    schema: DrizzleContentSchema,
+    revisions: () => RevisionRepository = () => getRevisionRepository()
+  ) {
+    this.db = db;
+    this.schema = schema;
+    this.revisions = revisions;
+  }
+
+  // ------------------------------------------------------------------
+  // Private helpers
+  // ------------------------------------------------------------------
+
+  /**
+   * Best-effort revision capture — mirrors FsContentWriter.captureRevision.
+   * Called AFTER the atomic write succeeds. DB failures are swallowed.
+   */
+  private async captureRevision(
+    contentType: "post" | "page",
+    slug: string,
+    rawContent: string,
+    rev?: RevisionContext
+  ): Promise<void> {
+    try {
+      await this.revisions().record({
+        contentType,
+        slug,
+        rawContent,
+        source: rev?.source ?? "cli",
+        authorId: rev?.authorId ?? null,
+        authorLabel: rev?.authorLabel ?? null,
+      });
+    } catch {
+      // Best-effort: DB down / no DATABASE_URL — swallow, never re-throw.
+    }
+  }
+
+  /**
+   * Return the set of slugs for all LIVE (non-trashed) posts.
+   * Used by createPost for collision resolution.
+   */
+  private async getLiveSlugs(): Promise<Set<string>> {
+    const rows: Array<{ slug: string }> = await this.db
+      .select({ slug: this.schema.content.slug })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          isNull(this.schema.content.deleted_at)
+        )
+      );
+    return new Set(rows.map((r) => r.slug));
+  }
+
+  /**
+   * Upsert a term row (taxonomy, slug, label).
+   * On conflict (taxonomy, slug): update label + updated_at.
+   * Returns the term's DB id.
+   */
+  private async upsertTerm(
+    taxonomy: string,
+    slug: string,
+    label: string
+  ): Promise<string> {
+    const now = nowEpoch();
+    const id = newId();
+    const result: Array<{ id: string }> = await this.db
+      .insert(this.schema.terms)
+      .values({
+        id,
+        taxonomy,
+        slug,
+        label,
+        parent_id: null,
+        description_markdown: null,
+        count: 0,
+        created_at: now,
+        updated_at: now,
+      })
+      .onConflictDoUpdate({
+        target: [this.schema.terms.taxonomy, this.schema.terms.slug],
+        set: { label, updated_at: now },
+      })
+      .returning({ id: this.schema.terms.id });
+    return result[0].id;
+  }
+
+  /**
+   * Reconcile terms.count for a set of term IDs.
+   * Recounts from term_relationships and sets count = 0 for terms no longer
+   * referenced.
+   */
+  private async reconcileTermCounts(termIds: string[]): Promise<void> {
+    if (termIds.length === 0) return;
+    const now = nowEpoch();
+    const uniqueIds = [...new Set(termIds)];
+
+    const counts: Array<{ term_id: string; cnt: unknown }> = await this.db
+      .select({
+        term_id: this.schema.term_relationships.term_id,
+        cnt: sql`count(distinct ${this.schema.term_relationships.content_id})`,
+      })
+      .from(this.schema.term_relationships)
+      .where(inArray(this.schema.term_relationships.term_id, uniqueIds))
+      .groupBy(this.schema.term_relationships.term_id);
+
+    const countMap = new Map(counts.map((r) => [r.term_id, Number(r.cnt)]));
+
+    for (const termId of uniqueIds) {
+      const cnt = countMap.get(termId) ?? 0;
+      await this.db
+        .update(this.schema.terms)
+        .set({ count: cnt, updated_at: now })
+        .where(eq(this.schema.terms.id, termId));
+    }
+  }
+
+  /**
+   * Insert SEO content_meta rows for a new content row.
+   * Uses onConflictDoUpdate so callers may re-use it idempotently.
+   */
+  private async insertSeoMeta(
+    contentId: string,
+    seo: PostSeo | undefined
+  ): Promise<void> {
+    const cleaned = cleanSeo(seo);
+    if (!cleaned) return;
+
+    for (const field of SEO_FIELDS) {
+      const value = cleaned[field];
+      if (value === undefined) continue;
+      const id = newId();
+      await this.db
+        .insert(this.schema.content_meta)
+        .values({
+          id,
+          content_id: contentId,
+          meta_key: seoMetaKey(field),
+          meta_value: seoMetaValue(value),
+        })
+        .onConflictDoUpdate({
+          target: [
+            this.schema.content_meta.content_id,
+            this.schema.content_meta.meta_key,
+          ],
+          set: { meta_value: seoMetaValue(value) },
+        });
+    }
+  }
+
+  /**
+   * Replace all SEO content_meta rows for a content item.
+   * Strategy: DELETE all existing seo.* rows, then re-insert the new set.
+   * This is simpler than diffing and correctly handles field removal.
+   */
+  private async updateSeoMeta(
+    contentId: string,
+    seo: PostSeo | undefined
+  ): Promise<void> {
+    // Step 1: delete all existing seo rows for this content
+    await this.db
+      .delete(this.schema.content_meta)
+      .where(
+        and(
+          eq(this.schema.content_meta.content_id, contentId),
+          like(this.schema.content_meta.meta_key, "seo.%")
+        )
+      );
+
+    // Step 2: insert the new set (may be empty if cleanSeo returns undefined)
+    const cleaned = cleanSeo(seo);
+    if (!cleaned) return;
+
+    for (const field of SEO_FIELDS) {
+      const value = cleaned[field];
+      if (value === undefined) continue;
+      const id = newId();
+      await this.db.insert(this.schema.content_meta).values({
+        id,
+        content_id: contentId,
+        meta_key: seoMetaKey(field),
+        meta_value: seoMetaValue(value),
+      });
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // ContentWriter — CRUD core
+  // ------------------------------------------------------------------
+
+  async createPost(
+    input: CreatePostInput,
+    rev?: RevisionContext
+  ): Promise<WriteResult> {
+    // Validate explicit slug before anything else — mirrors FsContentWriter order.
+    if (input.slug?.trim()) {
+      if (!isSafeSlug(input.slug.trim())) {
+        return {
+          ok: false,
+          error: { kind: "invalid_slug", slug: input.slug.trim() },
+        };
+      }
+    }
+
+    // Validate frontmatter (title, date, status, tags, categories, comments,
+    // author, authorId, visibility, password, seo). sticky is handled directly
+    // from input (mirrors FsContentWriter which bypasses schema for sticky).
+    const parseResult = PostFrontmatterSchema.safeParse({
+      title: input.title,
+      date: input.date,
+      status: input.status,
+      excerpt: input.excerpt,
+      coverImage: input.coverImage,
+      tags: input.tags,
+      categories: input.categories,
+      comments: input.comments,
+      author: input.author,
+      authorId: input.authorId,
+      visibility: input.visibility,
+      password: input.password,
+      seo: input.seo,
+    });
+    if (!parseResult.success) {
+      const issues = parseResult.error.issues
+        .map((i) => `${i.path.join(".") || "field"}: ${i.message}`)
+        .join("; ");
+      return { ok: false, error: { kind: "invalid_frontmatter", issues } };
+    }
+
+    // Derive final slug (explicit → slugify; else slugifyTitle(title))
+    const rawDesired = input.slug?.trim()
+      ? slugifyTitle(input.slug.trim())
+      : slugifyTitle(input.title);
+
+    if (!rawDesired || !isSafeSlug(rawDesired)) {
+      return { ok: false, error: { kind: "invalid_slug", slug: rawDesired } };
+    }
+
+    // Auto-resolve collision against LIVE posts (same as FS createPost)
+    const existingSlugs = await this.getLiveSlugs();
+    const finalSlug = resolveCollisionSlug(rawDesired, existingSlugs);
+
+    const now = nowEpoch();
+    const contentId = newId();
+
+    // Insert content row (sequential write — see atomicity note in module header)
+    await this.db.insert(this.schema.content).values({
+      id: contentId,
+      type: "post",
+      slug: finalSlug,
+      title: parseResult.data.title,
+      status: parseResult.data.status,
+      visibility: parseResult.data.visibility ?? "public",
+      password: parseResult.data.password ?? null,
+      body_markdown: input.body,
+      excerpt: parseResult.data.excerpt ?? null,
+      cover_image: parseResult.data.coverImage ?? null,
+      author_label: parseResult.data.author ?? null,
+      author_id: parseResult.data.authorId ?? null,
+      sticky: toBool01(input.sticky ?? false),
+      comments_enabled: toBool01(parseResult.data.comments),
+      parent_id: null,
+      menu_order: 0,
+      published_at: toEpoch(parseResult.data.date),
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    });
+
+    // Upsert terms + relationships
+    const affectedTermIds: string[] = [];
+
+    for (const rawTag of parseResult.data.tags) {
+      const slug = slugifyTag(rawTag);
+      const termId = await this.upsertTerm("tag", slug, rawTag);
+      await this.db
+        .insert(this.schema.term_relationships)
+        .values({ content_id: contentId, term_id: termId })
+        .onConflictDoNothing();
+      affectedTermIds.push(termId);
+    }
+
+    for (const rawCat of parseResult.data.categories) {
+      const slug = joinSlug(slugifyCategory(rawCat));
+      if (!slug) continue;
+      const termId = await this.upsertTerm("category", slug, rawCat);
+      await this.db
+        .insert(this.schema.term_relationships)
+        .values({ content_id: contentId, term_id: termId })
+        .onConflictDoNothing();
+      affectedTermIds.push(termId);
+    }
+
+    // Write SEO content_meta rows
+    await this.insertSeoMeta(contentId, parseResult.data.seo);
+
+    // Reconcile term counts for affected terms
+    await this.reconcileTermCounts(affectedTermIds);
+
+    // Best-effort revision capture
+    await this.captureRevision("post", finalSlug, input.body, rev);
+
+    return { ok: true, slug: finalSlug };
+  }
+
+  async updatePost(
+    currentSlug: string,
+    input: UpdatePostInput,
+    rev?: RevisionContext
+  ): Promise<WriteResult> {
+    // Locate existing live post
+    const existingRows: Array<{
+      id: string;
+      slug: string;
+      author_id: string | null;
+    }> = await this.db
+      .select({
+        id: this.schema.content.id,
+        slug: this.schema.content.slug,
+        author_id: this.schema.content.author_id,
+      })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          eq(this.schema.content.slug, currentSlug),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (existingRows.length === 0) {
+      return {
+        ok: false,
+        error: { kind: "post_not_found", slug: currentSlug },
+      };
+    }
+
+    const existingRow = existingRows[0];
+    const contentId = existingRow.id;
+    const existingAuthorId = existingRow.author_id;
+
+    // Compute new slug
+    const desiredNewSlug = input.slug?.trim()
+      ? slugifyTitle(input.slug.trim())
+      : currentSlug;
+    const slugChanged = desiredNewSlug !== currentSlug;
+
+    if (slugChanged) {
+      // Validate new slug charset
+      if (!isSafeSlug(desiredNewSlug)) {
+        return {
+          ok: false,
+          error: { kind: "invalid_slug", slug: desiredNewSlug },
+        };
+      }
+      // Hard-reject collision: another LIVE post (not the current row) already owns the new slug
+      const collisionRows: Array<{ id: string }> = await this.db
+        .select({ id: this.schema.content.id })
+        .from(this.schema.content)
+        .where(
+          and(
+            eq(this.schema.content.type, "post"),
+            eq(this.schema.content.slug, desiredNewSlug),
+            isNull(this.schema.content.deleted_at),
+            ne(this.schema.content.id, contentId)
+          )
+        )
+        .limit(1);
+      if (collisionRows.length > 0) {
+        return {
+          ok: false,
+          error: { kind: "slug_collision", slug: desiredNewSlug },
+        };
+      }
+    }
+
+    const newSlug = slugChanged ? desiredNewSlug : currentSlug;
+
+    // Validate frontmatter — note: authorId and sticky are NOT validated via the
+    // schema here (mirrors FsContentWriter.updatePost which also omits both).
+    // authorId is preserved from the existing DB row (equivalent to ADR-7 rawData spread).
+    // sticky is read directly from input (as in FsContentWriter).
+    const parseResult = PostFrontmatterSchema.safeParse({
+      title: input.title,
+      date: input.date,
+      status: input.status,
+      excerpt: input.excerpt,
+      coverImage: input.coverImage,
+      tags: input.tags,
+      categories: input.categories,
+      comments: input.comments,
+      author: input.author,
+      visibility: input.visibility,
+      password: input.password,
+      seo: input.seo,
+    });
+    if (!parseResult.success) {
+      const issues = parseResult.error.issues
+        .map((i) => `${i.path.join(".") || "field"}: ${i.message}`)
+        .join("; ");
+      return { ok: false, error: { kind: "invalid_frontmatter", issues } };
+    }
+
+    const now = nowEpoch();
+
+    // Collect old term IDs before mutation (for count reconciliation)
+    const oldTermRels: Array<{ term_id: string }> = await this.db
+      .select({ term_id: this.schema.term_relationships.term_id })
+      .from(this.schema.term_relationships)
+      .where(eq(this.schema.term_relationships.content_id, contentId));
+    const oldTermIds = oldTermRels.map((r) => r.term_id);
+
+    // UPDATE content row by ID — preserve author_id from existing row (ADR-7 parity)
+    await this.db
+      .update(this.schema.content)
+      .set({
+        slug: newSlug,
+        title: parseResult.data.title,
+        status: parseResult.data.status,
+        visibility: parseResult.data.visibility ?? "public",
+        password: parseResult.data.password ?? null,
+        body_markdown: input.body,
+        excerpt: parseResult.data.excerpt ?? null,
+        cover_image: parseResult.data.coverImage ?? null,
+        author_label: parseResult.data.author ?? null,
+        // author_id is preserved from the existing row (not overwritten from input)
+        author_id: existingAuthorId,
+        sticky: toBool01(input.sticky ?? false),
+        comments_enabled: toBool01(parseResult.data.comments),
+        published_at: toEpoch(parseResult.data.date),
+        updated_at: now,
+      })
+      .where(eq(this.schema.content.id, contentId));
+
+    // Delete all old term_relationships for this content
+    await this.db
+      .delete(this.schema.term_relationships)
+      .where(eq(this.schema.term_relationships.content_id, contentId));
+
+    // Upsert new terms + relationships
+    const newTermIds: string[] = [];
+
+    for (const rawTag of parseResult.data.tags) {
+      const slug = slugifyTag(rawTag);
+      const termId = await this.upsertTerm("tag", slug, rawTag);
+      await this.db
+        .insert(this.schema.term_relationships)
+        .values({ content_id: contentId, term_id: termId })
+        .onConflictDoNothing();
+      newTermIds.push(termId);
+    }
+
+    for (const rawCat of parseResult.data.categories) {
+      const slug = joinSlug(slugifyCategory(rawCat));
+      if (!slug) continue;
+      const termId = await this.upsertTerm("category", slug, rawCat);
+      await this.db
+        .insert(this.schema.term_relationships)
+        .values({ content_id: contentId, term_id: termId })
+        .onConflictDoNothing();
+      newTermIds.push(termId);
+    }
+
+    // Replace SEO meta (delete old set, insert new set)
+    await this.updateSeoMeta(contentId, parseResult.data.seo);
+
+    // Reconcile term counts for all affected terms (old + new)
+    const allAffected = [...new Set([...oldTermIds, ...newTermIds])];
+    await this.reconcileTermCounts(allAffected);
+
+    // Best-effort revision
+    await this.captureRevision("post", newSlug, input.body, rev);
+
+    return { ok: true, slug: newSlug };
+  }
+
+  async deletePost(slug: string): Promise<WriteResult> {
+    // Find the live post (graceful: absent → ok:true, same as FsContentWriter on ENOENT)
+    const rows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          eq(this.schema.content.slug, slug),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (rows.length === 0) {
+      // Graceful: row absent → ok:true
+      return { ok: true, slug };
+    }
+
+    const contentId = rows[0].id;
+
+    // Collect affected term IDs for count reconciliation
+    const termRels: Array<{ term_id: string }> = await this.db
+      .select({ term_id: this.schema.term_relationships.term_id })
+      .from(this.schema.term_relationships)
+      .where(eq(this.schema.term_relationships.content_id, contentId));
+    const affectedTermIds = termRels.map((r) => r.term_id);
+
+    // Cascade: delete term_relationships and content_meta before the content row
+    await this.db
+      .delete(this.schema.term_relationships)
+      .where(eq(this.schema.term_relationships.content_id, contentId));
+
+    await this.db
+      .delete(this.schema.content_meta)
+      .where(eq(this.schema.content_meta.content_id, contentId));
+
+    // Hard-delete the content row
+    await this.db
+      .delete(this.schema.content)
+      .where(eq(this.schema.content.id, contentId));
+
+    // Reconcile counts for freed terms
+    await this.reconcileTermCounts(affectedTermIds);
+
+    return { ok: true, slug };
+  }
+
+  async readRaw(
+    slug: string
+  ): Promise<{
+    frontmatter: Record<string, unknown>;
+    rawData: Record<string, unknown>;
+    body: string;
+  } | null> {
+    // Fetch the live post row
+    const rows: Array<{
+      id: string;
+      slug: string;
+      title: string;
+      status: string;
+      visibility: string;
+      password: string | null;
+      body_markdown: string;
+      excerpt: string | null;
+      cover_image: string | null;
+      author_label: string | null;
+      author_id: string | null;
+      sticky: number;
+      comments_enabled: number;
+      published_at: number;
+    }> = await this.db
+      .select()
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          eq(this.schema.content.slug, slug),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (rows.length === 0) return null;
+    const r = rows[0];
+
+    // Fetch terms for this content
+    const termRows: Array<{ taxonomy: string; label: string }> = await this.db
+      .select({
+        taxonomy: this.schema.terms.taxonomy,
+        label: this.schema.terms.label,
+      })
+      .from(this.schema.term_relationships)
+      .innerJoin(
+        this.schema.terms,
+        eq(this.schema.term_relationships.term_id, this.schema.terms.id)
+      )
+      .where(eq(this.schema.term_relationships.content_id, r.id));
+
+    const tags = termRows
+      .filter((t) => t.taxonomy === "tag")
+      .map((t) => t.label);
+    const categories = termRows
+      .filter((t) => t.taxonomy === "category")
+      .map((t) => t.label);
+
+    // Fetch SEO meta rows
+    const metaRows: Array<{ meta_key: string; meta_value: string | null }> =
+      await this.db
+        .select({
+          meta_key: this.schema.content_meta.meta_key,
+          meta_value: this.schema.content_meta.meta_value,
+        })
+        .from(this.schema.content_meta)
+        .where(
+          and(
+            eq(this.schema.content_meta.content_id, r.id),
+            like(this.schema.content_meta.meta_key, "seo.%")
+          )
+        );
+
+    const seo = reassembleSeo(metaRows);
+
+    // Reconstruct known fields into a plain record.
+    // DB-vs-FS note (ADR-7): the DB has no arbitrary extra keys. rawData and
+    // frontmatter carry identical content (the known schema fields only). This
+    // differs from the FS adapter where rawData may include author-added keys.
+    const data: Record<string, unknown> = {
+      title: r.title,
+      // published_at is epoch milliseconds → YYYY-MM-DD
+      date: fromEpoch(r.published_at).toISOString().slice(0, 10),
+      status: r.status,
+      tags,
+      categories,
+      slug: r.slug,
+      comments: fromBool01(r.comments_enabled),
+      sticky: fromBool01(r.sticky),
+      // visibility: omit when "public" to match FS oracle (FIX 1 — shape parity).
+      // FS writer uses serializeKnownFrontmatter which skips `visibility` when "public",
+      // so readRaw on a public FS post returns frontmatter WITHOUT a visibility key.
+      // Callers normalize via: (raw.frontmatter.visibility ?? "public")
+    };
+
+    const storedVisibility = r.visibility ?? "public";
+    if (storedVisibility !== "public") data.visibility = storedVisibility;
+    if (r.excerpt !== null) data.excerpt = r.excerpt;
+    if (r.cover_image !== null) data.coverImage = r.cover_image;
+    if (r.author_label !== null) data.author = r.author_label;
+    if (r.author_id !== null) data.authorId = r.author_id;
+    if (r.visibility === "password" && r.password !== null)
+      data.password = r.password;
+    if (seo !== undefined) data.seo = seo;
+
+    return {
+      frontmatter: data,
+      rawData: data, // same object — DB has no extra keys
+      body: r.body_markdown,
+    };
+  }
+
+  async setPostStatus(
+    slug: string,
+    status: "published" | "draft"
+  ): Promise<WriteResult> {
+    const rows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "post"),
+          eq(this.schema.content.slug, slug),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (rows.length === 0) {
+      return { ok: false, error: { kind: "post_not_found", slug } };
+    }
+
+    const now = nowEpoch();
+    await this.db
+      .update(this.schema.content)
+      .set({ status, updated_at: now })
+      .where(eq(this.schema.content.id, rows[0].id));
+
+    return { ok: true, slug };
+  }
+
+  // ------------------------------------------------------------------
+  // Trash operations — Phase 5 Slice C (not yet implemented)
+  // ------------------------------------------------------------------
+
+  async trashPost(_slug: string): Promise<WriteResult> {
+    throw new Error(
+      "DrizzleContentWriter: trash operations land in Phase 5 Slice C"
+    );
+  }
+
+  async listTrashedPosts(): Promise<TrashedItemInfo[]> {
+    throw new Error(
+      "DrizzleContentWriter: trash operations land in Phase 5 Slice C"
+    );
+  }
+
+  async restorePost(_slug: string): Promise<WriteResult> {
+    throw new Error(
+      "DrizzleContentWriter: trash operations land in Phase 5 Slice C"
+    );
+  }
+
+  async permanentlyDeletePost(_slug: string): Promise<WriteResult> {
+    throw new Error(
+      "DrizzleContentWriter: trash operations land in Phase 5 Slice C"
+    );
+  }
+}
