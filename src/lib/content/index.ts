@@ -28,19 +28,69 @@ export { hideFuturePosts, isFuturePost, derivePostDisplayStatus, matchesAdminSta
 export { slugifyAuthor, filterPostsByAuthor, buildAuthorIndex } from "./author";
 export type { AuthorEntry } from "./author";
 
-// Write-side factory — NOT cached, NOT wrapped in 'use cache'.
-// Cache invalidation is the Server Action layer's responsibility (ADR-4).
-// CRITICAL: No 'use cache' directive here or on getWriter().
+/**
+ * Returns a write-side adapter for posts.
+ *
+ * Selects the adapter based on the CONTENT_STORE environment variable:
+ *   - unset / "fs" / any other value → FsContentWriter (default, unchanged behavior)
+ *   - "db"     → DrizzleContentWriter (requires DATABASE_DIALECT + DATABASE_URL/FILE)
+ *
+ * The DB writer and its transitive dependencies (db-factory.ts → bun:sqlite) are loaded
+ * lazily via require() only when CONTENT_STORE="db" is set, keeping bun:sqlite out of
+ * the default module graph for the Next.js/Turbopack build.
+ *
+ * NOTE: DB-writer revision capture is a known follow-up concern. The revisions callback
+ * is passed for signature parity; DrizzleContentWriter.captureRevision is best-effort
+ * and swallows errors when the revisions DB is unavailable. Revision snapshotting for
+ * DB-backed posts is not yet guaranteed end-to-end.
+ *
+ * Write-side factory — NOT cached, NOT wrapped in 'use cache'.
+ * Cache invalidation is the Server Action layer's responsibility (ADR-4).
+ * CRITICAL: No 'use cache' directive here or on getWriter().
+ */
 export function getWriter(): ContentWriter {
+  if (process.env.CONTENT_STORE === "db") {
+    // Lazy-load to keep bun:sqlite out of the default fs bundle.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DrizzleContentWriter } = require("./drizzle-content-writer") as typeof import("./drizzle-content-writer");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
+    return new DrizzleContentWriter(getContentDb(), getContentSchema(), () => getRevisionRepository());
+  }
   return new FsContentWriter(
     path.join(process.cwd(), "content", "posts"),
     () => getRevisionRepository()
   );
 }
 
-// Page write-side factory — NOT cached, NOT wrapped in 'use cache'.
-// CRITICAL: No 'use cache' directive here or on getPageWriter().
+/**
+ * Returns a write-side adapter for pages.
+ *
+ * Selects the adapter based on the CONTENT_STORE environment variable:
+ *   - unset / "fs" / any other value → FsPageWriter (default, unchanged behavior)
+ *   - "db"     → DrizzlePageWriter (requires DATABASE_DIALECT + DATABASE_URL/FILE)
+ *
+ * The DB writer and its transitive dependencies (db-factory.ts → bun:sqlite) are loaded
+ * lazily via require() only when CONTENT_STORE="db" is set, keeping bun:sqlite out of
+ * the default module graph for the Next.js/Turbopack build.
+ *
+ * NOTE: DB-writer revision capture is a known follow-up concern. The revisions callback
+ * is passed for signature parity; DrizzlePageWriter.captureRevision is best-effort
+ * and swallows errors when the revisions DB is unavailable. Revision snapshotting for
+ * DB-backed pages is not yet guaranteed end-to-end.
+ *
+ * Page write-side factory — NOT cached, NOT wrapped in 'use cache'.
+ * CRITICAL: No 'use cache' directive here or on getPageWriter().
+ */
 export function getPageWriter(): PageWriter {
+  if (process.env.CONTENT_STORE === "db") {
+    // Lazy-load to keep bun:sqlite out of the default fs bundle.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DrizzlePageWriter } = require("./drizzle-page-writer") as typeof import("./drizzle-page-writer");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
+    return new DrizzlePageWriter(getContentDb(), getContentSchema(), () => getRevisionRepository());
+  }
   return new FsPageWriter(
     path.join(process.cwd(), "content", "pages"),
     () => getRevisionRepository()
