@@ -702,7 +702,9 @@ export class DrizzleContentWriter implements ContentWriter {
     if (rows.length === 0) return null;
     const r = rows[0];
 
-    // Fetch terms for this content
+    // Fetch terms for this content in a stable, deterministic order.
+    // ORDER BY label ASC, id ASC gives an alphabetical tag/category list that is
+    // consistent across runs regardless of engine row-return order.
     const termRows: Array<{ taxonomy: string; label: string }> = await this.db
       .select({
         taxonomy: this.schema.terms.taxonomy,
@@ -713,7 +715,8 @@ export class DrizzleContentWriter implements ContentWriter {
         this.schema.terms,
         eq(this.schema.term_relationships.term_id, this.schema.terms.id)
       )
-      .where(eq(this.schema.term_relationships.content_id, r.id));
+      .where(eq(this.schema.term_relationships.content_id, r.id))
+      .orderBy(asc(this.schema.terms.label), asc(this.schema.terms.id));
 
     const tags = termRows
       .filter((t) => t.taxonomy === "tag")
@@ -833,6 +836,9 @@ export class DrizzleContentWriter implements ContentWriter {
     // Build serialized markdown for revision capture — mirrors FsContentWriter.setPostStatus
     // which does: mergedData = { ...existing.rawData, status }; captureRevision(rawContent).
     // Fetch terms and SEO to reconstruct the full fm for the new-status revision.
+    // ORDER BY label ASC, id ASC for a stable, deterministic tag/category order so that
+    // the serialized frontmatter is reproducible across runs (root cause of the flaky
+    // cross-writer parity test: non-deterministic row order in term_relationships join).
     const termRows: Array<{ taxonomy: string; label: string }> = await this.db
       .select({
         taxonomy: this.schema.terms.taxonomy,
@@ -843,7 +849,8 @@ export class DrizzleContentWriter implements ContentWriter {
         this.schema.terms,
         eq(this.schema.term_relationships.term_id, this.schema.terms.id)
       )
-      .where(eq(this.schema.term_relationships.content_id, r.id));
+      .where(eq(this.schema.term_relationships.content_id, r.id))
+      .orderBy(asc(this.schema.terms.label), asc(this.schema.terms.id));
 
     const tags = termRows
       .filter((t) => t.taxonomy === "tag")

@@ -179,7 +179,11 @@ export class DrizzleContentAdapter implements ContentRepository {
       })
       .from(term_relationships)
       .innerJoin(terms, eq(term_relationships.term_id, terms.id))
-      .where(inArray(term_relationships.content_id, ids));
+      .where(inArray(term_relationships.content_id, ids))
+      // Stable, deterministic order: label ASC (human-readable sort), then id
+      // ASC as a tie-break so two terms that share a label (impossible with the
+      // UNIQUE INDEX on (taxonomy, slug) but defensive) produce a consistent result.
+      .orderBy(asc(terms.label), asc(terms.id));
   }
 
   /**
