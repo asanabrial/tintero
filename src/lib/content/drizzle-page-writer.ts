@@ -39,7 +39,7 @@
  *     - seo included when present
  */
 
-import { and, eq, inArray, isNull, like, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, like, ne } from "drizzle-orm";
 import { PageFrontmatterSchema } from "./schema";
 import { isSafeSlug, resolveCollisionSlug, slugifyTitle } from "./slug";
 import { newId, nowEpoch, toEpoch, fromEpoch } from "./db-values";
@@ -603,30 +603,161 @@ export class DrizzlePageWriter implements PageWriter {
   }
 
   // ------------------------------------------------------------------
-  // Trash operations — Phase 5 Slice C (not yet implemented)
+  // Trash operations — Phase 5 Slice C
   // ------------------------------------------------------------------
 
-  async trashPage(_slug: string): Promise<WriteResult> {
-    throw new Error(
-      "DrizzlePageWriter: trash operations land in Phase 5 Slice C"
-    );
+  /**
+   * Move a LIVE page to the trash by setting deleted_at.
+   * Returns page_not_found when no live page with that slug exists.
+   * content_meta rows are LEFT INTACT so restore brings them back.
+   * Pages have no term_relationships — no count reconciliation needed.
+   */
+  async trashPage(slug: string): Promise<WriteResult> {
+    const rows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "page"),
+          eq(this.schema.content.slug, slug),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (rows.length === 0) {
+      return { ok: false, error: { kind: "page_not_found", slug } };
+    }
+
+    const now = nowEpoch();
+    await this.db
+      .update(this.schema.content)
+      .set({ deleted_at: now, updated_at: now })
+      .where(eq(this.schema.content.id, rows[0].id));
+
+    return { ok: true, slug };
   }
 
+  /**
+   * List all trashed pages (deleted_at IS NOT NULL).
+   * Returns TrashedItemInfo[] sorted by published_at DESC, slug ASC for determinism.
+   * date field is YYYY-MM-DD derived from published_at epoch milliseconds.
+   */
   async listTrashedPages(): Promise<TrashedItemInfo[]> {
-    throw new Error(
-      "DrizzlePageWriter: trash operations land in Phase 5 Slice C"
-    );
+    const rows: Array<{
+      slug: string;
+      title: string;
+      published_at: number;
+    }> = await this.db
+      .select({
+        slug: this.schema.content.slug,
+        title: this.schema.content.title,
+        published_at: this.schema.content.published_at,
+      })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "page"),
+          isNotNull(this.schema.content.deleted_at)
+        )
+      )
+      .orderBy(
+        desc(this.schema.content.published_at),
+        asc(this.schema.content.slug)
+      );
+
+    return rows.map((r) => ({
+      slug: r.slug,
+      title: r.title,
+      date: fromEpoch(r.published_at).toISOString().slice(0, 10),
+    }));
   }
 
-  async restorePage(_slug: string): Promise<WriteResult> {
-    throw new Error(
-      "DrizzlePageWriter: trash operations land in Phase 5 Slice C"
-    );
+  /**
+   * Restore a trashed page by clearing deleted_at.
+   * Returns page_not_found when no trashed page with that slug exists.
+   * Checks for a live slug collision before restoring (mirrors FS behavior).
+   */
+  async restorePage(slug: string): Promise<WriteResult> {
+    // Find the trashed row
+    const trashedRows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "page"),
+          eq(this.schema.content.slug, slug),
+          isNotNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (trashedRows.length === 0) {
+      return { ok: false, error: { kind: "page_not_found", slug } };
+    }
+
+    // Check for a live collision (another live row owns this slug)
+    const liveRows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "page"),
+          eq(this.schema.content.slug, slug),
+          isNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (liveRows.length > 0) {
+      return { ok: false, error: { kind: "slug_collision", slug } };
+    }
+
+    const now = nowEpoch();
+    await this.db
+      .update(this.schema.content)
+      .set({ deleted_at: null, updated_at: now })
+      .where(eq(this.schema.content.id, trashedRows[0].id));
+
+    return { ok: true, slug };
   }
 
-  async permanentlyDeletePage(_slug: string): Promise<WriteResult> {
-    throw new Error(
-      "DrizzlePageWriter: trash operations land in Phase 5 Slice C"
-    );
+  /**
+   * Permanently hard-delete a trashed page.
+   * Graceful when the slug is not in the trash (ok:true, mirrors FS ENOENT).
+   * Cascades: deletes content_meta before the content row.
+   * Pages have no term_relationships.
+   */
+  async permanentlyDeletePage(slug: string): Promise<WriteResult> {
+    // Find the trashed row
+    const rows: Array<{ id: string }> = await this.db
+      .select({ id: this.schema.content.id })
+      .from(this.schema.content)
+      .where(
+        and(
+          eq(this.schema.content.type, "page"),
+          eq(this.schema.content.slug, slug),
+          isNotNull(this.schema.content.deleted_at)
+        )
+      )
+      .limit(1);
+
+    if (rows.length === 0) {
+      // Graceful: not in trash
+      return { ok: true, slug };
+    }
+
+    const contentId = rows[0].id;
+
+    // Cascade: content_meta → content
+    await this.db
+      .delete(this.schema.content_meta)
+      .where(eq(this.schema.content_meta.content_id, contentId));
+
+    await this.db
+      .delete(this.schema.content)
+      .where(eq(this.schema.content.id, contentId));
+
+    return { ok: true, slug };
   }
 }

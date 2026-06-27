@@ -650,5 +650,154 @@ export function runContentWriterContract(
       const actual = (raw.frontmatter.authorId ?? raw.rawData.authorId) as string | undefined;
       expect(actual).toBe(authorId);
     });
+
+    // ------------------------------------------------------------------
+    // TRASH LIFECYCLE (Phase 5 Slice C)
+    // ------------------------------------------------------------------
+
+    describe("trash lifecycle", () => {
+      test("trashPost: live post → getPost null AND appears in listTrashedPosts with correct fields", async () => {
+        const created = await h.writer.createPost({
+          title: "Trash Me Post",
+          date: "2024-06-01",
+          status: "published",
+          tags: [],
+          categories: [],
+          comments: true,
+          body: "body",
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const slug = created.slug;
+
+        const trashed = await h.writer.trashPost(slug);
+        expect(trashed.ok).toBe(true);
+
+        // getPost returns null for a trashed post (even with includeDrafts)
+        const post = await h.reader.getPost(slug, { includeDrafts: true });
+        expect(post).toBeNull();
+
+        // listTrashedPosts includes the item with correct fields
+        const trashList = await h.writer.listTrashedPosts();
+        const found = trashList.find((item) => item.slug === slug);
+        expect(found).toBeDefined();
+        if (!found) return;
+        expect(found.title).toBe("Trash Me Post");
+        expect(found.date).toBe("2024-06-01");
+      });
+
+      test("restorePost: trashed → getPost returns it again, gone from listTrashedPosts", async () => {
+        const created = await h.writer.createPost({
+          title: "Restore Me Post",
+          date: "2024-06-02",
+          status: "draft",
+          tags: [],
+          categories: [],
+          comments: false,
+          body: "restore body",
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const slug = created.slug;
+
+        await h.writer.trashPost(slug);
+        const restored = await h.writer.restorePost(slug);
+        expect(restored.ok).toBe(true);
+
+        // getPost finds it again after restore
+        const post = await h.reader.getPost(slug, { includeDrafts: true });
+        expect(post).not.toBeNull();
+        expect(post?.title).toBe("Restore Me Post");
+
+        // listTrashedPosts no longer includes it
+        const trashList = await h.writer.listTrashedPosts();
+        const found = trashList.find((item) => item.slug === slug);
+        expect(found).toBeUndefined();
+      });
+
+      test("restorePost: collision when live post exists with same slug → slug_collision", async () => {
+        // Create and trash the original post
+        const created = await h.writer.createPost({
+          title: "Collision Target Post",
+          slug: "collision-target-post",
+          date: "2024-06-03",
+          status: "published",
+          tags: [],
+          categories: [],
+          comments: false,
+          body: "original",
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const slug = created.slug;
+
+        await h.writer.trashPost(slug);
+
+        // Create a new live post with the same slug (trashed post frees the live slot)
+        const second = await h.writer.createPost({
+          title: "Collision Target Post",
+          slug: "collision-target-post",
+          date: "2024-06-04",
+          status: "published",
+          tags: [],
+          categories: [],
+          comments: false,
+          body: "new post",
+        });
+        expect(second.ok).toBe(true);
+        if (!second.ok) return;
+        // The new post occupies the same slug as the trashed one
+        expect(second.slug).toBe(slug);
+
+        // Now restore the trashed post → slug_collision
+        const restored = await h.writer.restorePost(slug);
+        expect(restored.ok).toBe(false);
+        if (restored.ok) return;
+        expect(restored.error.kind).toBe("slug_collision");
+      });
+
+      test("permanentlyDeletePost: removes from trash; subsequent restore → post_not_found", async () => {
+        const created = await h.writer.createPost({
+          title: "Permanent Delete Post",
+          date: "2024-06-05",
+          status: "published",
+          tags: [],
+          categories: [],
+          comments: false,
+          body: "body",
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const slug = created.slug;
+
+        await h.writer.trashPost(slug);
+
+        const permaDelete = await h.writer.permanentlyDeletePost(slug);
+        expect(permaDelete.ok).toBe(true);
+
+        // Gone from listTrashedPosts
+        const trashList = await h.writer.listTrashedPosts();
+        const found = trashList.find((item) => item.slug === slug);
+        expect(found).toBeUndefined();
+
+        // restorePost on a permanently-deleted slug → post_not_found
+        const restored = await h.writer.restorePost(slug);
+        expect(restored.ok).toBe(false);
+        if (restored.ok) return;
+        expect(restored.error.kind).toBe("post_not_found");
+      });
+
+      test("trashPost: non-existent slug → post_not_found", async () => {
+        const result = await h.writer.trashPost("does-not-exist-trash-xyz");
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error.kind).toBe("post_not_found");
+      });
+
+      test("permanentlyDeletePost: slug not in trash → ok:true (graceful)", async () => {
+        const result = await h.writer.permanentlyDeletePost("not-in-trash-xyz");
+        expect(result.ok).toBe(true);
+      });
+    });
   });
 }

@@ -584,5 +584,138 @@ export function runPageWriterContract(
       // Slug was freed by delete — no -2 suffix expected
       expect(second.slug).toBe(originalSlug);
     });
+
+    // ------------------------------------------------------------------
+    // TRASH LIFECYCLE (Phase 5 Slice C)
+    // ------------------------------------------------------------------
+
+    describe("trash lifecycle", () => {
+      test("trashPage: live page → getPage null AND appears in listTrashedPages with correct fields", async () => {
+        const created = await h.writer.createPage({
+          title: "Trash Me Page",
+          date: "2024-06-01",
+          body: "body",
+          status: "published",
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const slug = created.slug;
+
+        const trashed = await h.writer.trashPage(slug);
+        expect(trashed.ok).toBe(true);
+
+        // getPage returns null for a trashed page (even with includeDrafts)
+        const page = await h.reader.getPage(slug, { includeDrafts: true });
+        expect(page).toBeNull();
+
+        // listTrashedPages includes the item with correct fields
+        const trashList = await h.writer.listTrashedPages();
+        const found = trashList.find((item) => item.slug === slug);
+        expect(found).toBeDefined();
+        if (!found) return;
+        expect(found.title).toBe("Trash Me Page");
+        expect(found.date).toBe("2024-06-01");
+      });
+
+      test("restorePage: trashed → getPage returns it again, gone from listTrashedPages", async () => {
+        const created = await h.writer.createPage({
+          title: "Restore Me Page",
+          date: "2024-06-02",
+          body: "restore body",
+          status: "draft",
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const slug = created.slug;
+
+        await h.writer.trashPage(slug);
+        const restored = await h.writer.restorePage(slug);
+        expect(restored.ok).toBe(true);
+
+        // getPage finds it again after restore
+        const page = await h.reader.getPage(slug, { includeDrafts: true });
+        expect(page).not.toBeNull();
+        expect(page?.title).toBe("Restore Me Page");
+
+        // listTrashedPages no longer includes it
+        const trashList = await h.writer.listTrashedPages();
+        const found = trashList.find((item) => item.slug === slug);
+        expect(found).toBeUndefined();
+      });
+
+      test("restorePage: collision when live page exists with same slug → slug_collision", async () => {
+        // Create and trash the original page
+        const created = await h.writer.createPage({
+          title: "Collision Target Page",
+          slug: "collision-target-page",
+          date: "2024-06-03",
+          body: "original",
+          status: "published",
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const slug = created.slug;
+
+        await h.writer.trashPage(slug);
+
+        // Create a new live page with the same slug (trashed page frees the live slot)
+        const second = await h.writer.createPage({
+          title: "Collision Target Page",
+          slug: "collision-target-page",
+          date: "2024-06-04",
+          body: "new page",
+          status: "published",
+        });
+        expect(second.ok).toBe(true);
+        if (!second.ok) return;
+        expect(second.slug).toBe(slug);
+
+        // Now restore the trashed page → slug_collision
+        const restored = await h.writer.restorePage(slug);
+        expect(restored.ok).toBe(false);
+        if (restored.ok) return;
+        expect(restored.error.kind).toBe("slug_collision");
+      });
+
+      test("permanentlyDeletePage: removes from trash; subsequent restore → page_not_found", async () => {
+        const created = await h.writer.createPage({
+          title: "Permanent Delete Page",
+          date: "2024-06-05",
+          body: "body",
+          status: "published",
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const slug = created.slug;
+
+        await h.writer.trashPage(slug);
+
+        const permaDelete = await h.writer.permanentlyDeletePage(slug);
+        expect(permaDelete.ok).toBe(true);
+
+        // Gone from listTrashedPages
+        const trashList = await h.writer.listTrashedPages();
+        const found = trashList.find((item) => item.slug === slug);
+        expect(found).toBeUndefined();
+
+        // restorePage on a permanently-deleted slug → page_not_found
+        const restored = await h.writer.restorePage(slug);
+        expect(restored.ok).toBe(false);
+        if (restored.ok) return;
+        expect(restored.error.kind).toBe("page_not_found");
+      });
+
+      test("trashPage: non-existent slug → page_not_found", async () => {
+        const result = await h.writer.trashPage("does-not-exist-trash-page-xyz");
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error.kind).toBe("page_not_found");
+      });
+
+      test("permanentlyDeletePage: slug not in trash → ok:true (graceful)", async () => {
+        const result = await h.writer.permanentlyDeletePage("not-in-trash-page-xyz");
+        expect(result.ok).toBe(true);
+      });
+    });
   });
 }
