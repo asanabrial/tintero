@@ -2,8 +2,14 @@
 // Instructs the operator to push the Drizzle schema.
 
 import { recheckAction } from "./actions";
+import { contentSchemaPushCommand } from "@/lib/install/content-schema-command";
 
 export function SchemaStep() {
+  const contentCmd = contentSchemaPushCommand(
+    process.env.CONTENT_STORE,
+    process.env.DATABASE_DIALECT
+  );
+
   return (
     <div className="space-y-5">
       <div>
@@ -21,6 +27,18 @@ export function SchemaStep() {
           <code>bunx drizzle-kit push</code>
         </pre>
       </div>
+
+      {contentCmd !== null && (
+        <div className="space-y-2 text-sm text-zinc-700 dark:text-zinc-300">
+          <p className="font-medium">Content tables (DB content store)</p>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Only needed when <code className="font-mono">CONTENT_STORE=db</code>.
+          </p>
+          <pre className="rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 px-4 py-3 text-xs font-mono overflow-x-auto">
+            <code>{contentCmd}</code>
+          </pre>
+        </div>
+      )}
 
       <form action={recheckAction}>
         <button
