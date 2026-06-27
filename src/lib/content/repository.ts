@@ -30,11 +30,16 @@ let _adapter: ContentRepository | null = null;
  *
  * Selects the adapter based on the CONTENT_STORE environment variable:
  *   - unset / "fs" / any other value → FilesystemContentAdapter (default, unchanged behavior)
- *   - "db"                           → DrizzleContentAdapter (requires DATABASE_DIALECT + DATABASE_URL/FILE)
+ *   - "db"     → DrizzleContentAdapter (requires DATABASE_DIALECT + DATABASE_URL/FILE)
+ *   - "shadow" → ShadowContentAdapter wrapping FilesystemContentAdapter (primary/oracle)
+ *                and DrizzleContentAdapter (secondary). The filesystem result is ALWAYS
+ *                returned; the DB read is shadowed for comparison only and divergences are
+ *                logged to console.warn with the prefix "[content:shadow]". Requires the
+ *                same DATABASE_DIALECT + DATABASE_URL/FILE as the "db" branch.
  *
  * The DB adapter and its transitive dependencies (db-factory.ts → bun:sqlite) are loaded
- * lazily via require() only when CONTENT_STORE="db" is explicitly set, keeping bun:sqlite
- * out of the default module graph for the Next.js/Turbopack build.
+ * lazily via require() only when CONTENT_STORE="db" or CONTENT_STORE="shadow" is set,
+ * keeping bun:sqlite out of the default module graph for the Next.js/Turbopack build.
  */
 export function getAdapter(): ContentRepository {
   if (!_adapter) {
@@ -45,6 +50,17 @@ export function getAdapter(): ContentRepository {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
       _adapter = new DrizzleContentAdapter(getContentDb(), CONFIG_ROOT, getContentSchema());
+    } else if (process.env.CONTENT_STORE === "shadow") {
+      // Lazy-load DB pieces to keep bun:sqlite out of the default fs bundle.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { DrizzleContentAdapter } = require("./drizzle-adapter") as typeof import("./drizzle-adapter");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { ShadowContentAdapter } = require("./shadow-adapter") as typeof import("./shadow-adapter");
+      const primary = new FilesystemContentAdapter(CONTENT_ROOT);
+      const secondary = new DrizzleContentAdapter(getContentDb(), CONFIG_ROOT, getContentSchema());
+      _adapter = new ShadowContentAdapter(primary, secondary);
     } else {
       _adapter = new FilesystemContentAdapter(CONTENT_ROOT);
     }
