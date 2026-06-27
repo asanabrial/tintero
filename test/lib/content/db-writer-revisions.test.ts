@@ -29,6 +29,7 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import * as schema from "@/lib/content/schema.sqlite";
 import { DrizzleContentWriter } from "@/lib/content/drizzle-content-writer";
 import { DrizzlePageWriter } from "@/lib/content/drizzle-page-writer";
+import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
 import { FsContentWriter } from "@/lib/content/fs-writer";
 import { FsPageWriter } from "@/lib/content/fs-page-writer";
 import {
@@ -977,11 +978,17 @@ describe("Cross-writer rawContent parity — DB writers match FS writers", () =>
     const fsWriter = new FsContentWriter(tmpDir, () => fsMock.repo);
     const dbWriter = new DrizzleContentWriter(db, schema, () => dbMock.repo);
 
+    // IMPORTANT: tags must be seeded in alphabetical order (the stable ORDER BY the DB
+    // applies when re-reading terms). The DB cannot recover original insertion order
+    // (no ordinal column exists), so it returns terms sorted by label ASC.
+    // Seeding in the same alphabetical order makes DB output byte-match FS output,
+    // because the FS writer preserves whatever order is written to the file.
+    // "testing" < "ts" alphabetically (comparing 'e' vs 's' at position 2).
     const input: CreatePostInput = {
       title: "Status Parity Post",
       date: "2024-06-01",
       status: "published",
-      tags: ["ts", "testing"],
+      tags: ["testing", "ts"],
       categories: ["Tech"],
       comments: true,
       body: "Body for status parity testing.",
@@ -1041,5 +1048,145 @@ describe("Cross-writer rawContent parity — DB writers match FS writers", () =>
 
     // Core parity assertion:
     expect(dbMock.calls[0].rawContent).toBe(fsMock.calls[0].rawContent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// § 7 — Read-path term order determinism
+//
+// These tests lock the determinism contract: tags and categories read back from
+// the DB (via readRaw and getPost) MUST be in a stable, alphabetical order
+// regardless of the order in which they were inserted or the engine's physical
+// row-return order. This guards against the regression identified in:
+//   fix/db-term-order-determinism — non-deterministic ORDER BY on the
+//   term_relationships join caused flaky cross-writer parity failures.
+// ---------------------------------------------------------------------------
+
+describe("Term order determinism — readRaw (DrizzleContentWriter)", () => {
+  let raw: Database;
+  let db: ReturnType<typeof drizzle>;
+
+  beforeEach(() => {
+    ({ raw, db } = makeDb());
+  });
+
+  afterEach(() => {
+    raw.close();
+  });
+
+  test("readRaw — tags come back in stable alphabetical order regardless of insertion order", async () => {
+    const mock = makeRevisionRepo();
+    const writer = new DrizzleContentWriter(db, schema, () => mock.repo);
+    // Insert tags in intentionally non-alphabetical order to expose ordering bugs.
+    const result = await writer.createPost({
+      title: "Tag Order Test",
+      date: "2024-01-01",
+      status: "published",
+      tags: ["zeta", "alpha", "mu"],
+      categories: [],
+      comments: true,
+      body: "Body.",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const raw = await writer.readRaw(result.slug);
+    expect(raw).not.toBeNull();
+    // Must be sorted alphabetically: alpha < mu < zeta
+    expect(raw!.frontmatter.tags).toEqual(["alpha", "mu", "zeta"]);
+  });
+
+  test("readRaw — categories come back in stable alphabetical order regardless of insertion order", async () => {
+    const mock = makeRevisionRepo();
+    const writer = new DrizzleContentWriter(db, schema, () => mock.repo);
+    const result = await writer.createPost({
+      title: "Category Order Test",
+      date: "2024-01-01",
+      status: "published",
+      tags: [],
+      // Intentionally non-alphabetical
+      categories: ["Tech", "Art", "Science"],
+      comments: true,
+      body: "Body.",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const raw = await writer.readRaw(result.slug);
+    expect(raw).not.toBeNull();
+    // Must be sorted alphabetically: Art < Science < Tech
+    expect(raw!.frontmatter.categories).toEqual(["Art", "Science", "Tech"]);
+  });
+});
+
+describe("Term order determinism — getPost (DrizzleContentAdapter)", () => {
+  let raw: Database;
+  let db: ReturnType<typeof drizzle>;
+  let configRoot: string;
+
+  beforeEach(async () => {
+    ({ raw, db } = makeDb());
+    // Create a minimal config directory so DrizzleContentAdapter.getSiteConfig
+    // and loadTaxonomyRegistry succeed without a real content/ tree.
+    configRoot = await fsNode.mkdtemp(path.join(os.tmpdir(), "tintero-cfg-"));
+    await fsNode.writeFile(
+      path.join(configRoot, "site.yaml"),
+      "title: Test Site\nauthor:\n  name: Test Author\n"
+    );
+    await fsNode.writeFile(
+      path.join(configRoot, "taxonomies.yaml"),
+      "tags: []\ncategories: []\n"
+    );
+  });
+
+  afterEach(async () => {
+    raw.close();
+    await fsNode.rm(configRoot, { recursive: true, force: true });
+  });
+
+  test("getPost — tags come back in stable alphabetical order regardless of insertion order", async () => {
+    const mock = makeRevisionRepo();
+    const writer = new DrizzleContentWriter(db, schema, () => mock.repo);
+    const result = await writer.createPost({
+      title: "Adapter Tag Order",
+      date: "2024-01-01",
+      status: "published",
+      // Non-alphabetical insertion order
+      tags: ["zeta", "alpha", "mu"],
+      categories: [],
+      comments: true,
+      body: "Body.",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const adapter = new DrizzleContentAdapter(db, configRoot, schema);
+    const post = await adapter.getPost(result.slug, { includeDrafts: true });
+    expect(post).not.toBeNull();
+    // Tags must be sorted alphabetically regardless of insertion order
+    expect(post!.tags).toEqual(["alpha", "mu", "zeta"]);
+  });
+
+  test("getPost — categories come back in stable alphabetical order regardless of insertion order", async () => {
+    const mock = makeRevisionRepo();
+    const writer = new DrizzleContentWriter(db, schema, () => mock.repo);
+    const result = await writer.createPost({
+      title: "Adapter Category Order",
+      date: "2024-01-01",
+      status: "published",
+      tags: [],
+      // Non-alphabetical insertion order
+      categories: ["Tech", "Art", "Science"],
+      comments: true,
+      body: "Body.",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const adapter = new DrizzleContentAdapter(db, configRoot, schema);
+    const post = await adapter.getPost(result.slug, { includeDrafts: true });
+    expect(post).not.toBeNull();
+    // Categories must be sorted alphabetically regardless of insertion order
+    expect(post!.categories).toEqual(["Art", "Science", "Tech"]);
   });
 });
