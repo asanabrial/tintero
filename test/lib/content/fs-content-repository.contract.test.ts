@@ -27,7 +27,8 @@ import {
 
 /**
  * Serialize a plain record into YAML frontmatter lines.
- * Handles strings (quoted), booleans, numbers, and string arrays (flow notation).
+ * Handles strings (quoted), booleans, numbers, string arrays (flow notation),
+ * and one-level-deep plain objects (e.g. the seo field).
  */
 function buildFrontmatter(data: Record<string, unknown>): string {
   const lines: string[] = [];
@@ -41,6 +42,24 @@ function buildFrontmatter(data: Record<string, unknown>): string {
     } else if (Array.isArray(v)) {
       const items = v.map((x) => `"${String(x)}"`).join(", ");
       lines.push(`${k}: [${items}]`);
+    } else if (typeof v === "object") {
+      // One-level-deep nested object (e.g. seo: { title: "...", noindex: true })
+      const nested = v as Record<string, unknown>;
+      const nestedLines: string[] = [];
+      for (const [nk, nv] of Object.entries(nested)) {
+        if (nv === undefined || nv === null) continue;
+        if (typeof nv === "string") {
+          nestedLines.push(
+            `  ${nk}: "${nv.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+          );
+        } else if (typeof nv === "boolean" || typeof nv === "number") {
+          nestedLines.push(`  ${nk}: ${nv}`);
+        }
+      }
+      if (nestedLines.length > 0) {
+        lines.push(`${k}:`);
+        lines.push(...nestedLines);
+      }
     }
   }
   return lines.join("\n");
@@ -61,6 +80,7 @@ function postToMarkdown(post: SeedPost): string {
   if (post.visibility !== undefined) fm.visibility = post.visibility;
   if (post.password !== undefined) fm.password = post.password;
   if (post.coverImage !== undefined) fm.coverImage = post.coverImage;
+  if (post.seo !== undefined) fm.seo = post.seo;
 
   return `---\n${buildFrontmatter(fm)}\n---\n\n${post.body ?? ""}\n`;
 }
@@ -74,6 +94,7 @@ function pageToMarkdown(page: SeedPage): string {
   if (page.menuOrder !== undefined) fm.menu_order = page.menuOrder;
   if (page.parent !== undefined) fm.parent = page.parent;
   if (page.excerpt !== undefined) fm.excerpt = page.excerpt;
+  if (page.seo !== undefined) fm.seo = page.seo;
 
   return `---\n${buildFrontmatter(fm)}\n---\n\n${page.body ?? ""}\n`;
 }

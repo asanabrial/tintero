@@ -11,7 +11,7 @@
  */
 
 import * as path from "node:path";
-import { and, asc, count, desc, eq, gt, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, like, lte, ne, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { renderMarkdown } from "./markdown";
 import { loadSiteConfig } from "./site-config";
@@ -51,7 +51,7 @@ import type {
   ListPagesResult,
   StatusCounts,
 } from "./ports";
-import type { Category, Page, Post, SiteConfig, Tag } from "./types";
+import type { Category, Page, Post, PostSeo, SiteConfig, Tag } from "./types";
 
 // We use the drizzle instance typed broadly to avoid driver-specific imports,
 // mirroring the DrizzleCommentAdapter and factory.ts conventions.
@@ -178,6 +178,59 @@ export class DrizzleContentAdapter implements ContentRepository {
       .from(term_relationships)
       .innerJoin(terms, eq(term_relationships.term_id, terms.id))
       .where(inArray(term_relationships.content_id, ids));
+  }
+
+  /**
+   * Fetch SEO metadata for a set of content IDs from the content_meta table.
+   *
+   * Mirrors fetchTermsForIds: SELECT content_id, meta_key, meta_value WHERE
+   * content_id IN ids AND meta_key LIKE 'seo.%'. Reassembles per content_id
+   * into a PostSeo object by stripping the "seo." prefix. Boolean fields
+   * (noindex, cornerstone) are parsed from "true"/"false" text into real JS
+   * booleans. Returns only content_ids that have ≥1 seo field set.
+   */
+  private async fetchSeoForIds(ids: string[]): Promise<Map<string, PostSeo>> {
+    const { content_meta } = this.schema;
+    if (ids.length === 0) return new Map();
+
+    const rows: Array<{
+      content_id: string;
+      meta_key: string;
+      meta_value: string | null;
+    }> = await this.db
+      .select({
+        content_id: content_meta.content_id,
+        meta_key: content_meta.meta_key,
+        meta_value: content_meta.meta_value,
+      })
+      .from(content_meta)
+      .where(
+        and(
+          inArray(content_meta.content_id, ids),
+          like(content_meta.meta_key, "seo.%")
+        )
+      );
+
+    const seoMap = new Map<string, PostSeo>();
+    const BOOLEAN_SEO_FIELDS = new Set(["noindex", "cornerstone"]);
+
+    for (const row of rows) {
+      if (row.meta_value === null) continue;
+      const field = row.meta_key.slice(4); // strip "seo." prefix
+
+      if (!seoMap.has(row.content_id)) {
+        seoMap.set(row.content_id, {});
+      }
+      const seo = seoMap.get(row.content_id)!;
+
+      if (BOOLEAN_SEO_FIELDS.has(field)) {
+        (seo as Record<string, unknown>)[field] = row.meta_value === "true";
+      } else {
+        (seo as Record<string, unknown>)[field] = row.meta_value;
+      }
+    }
+
+    return seoMap;
   }
 
   /**
@@ -399,6 +452,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         termRows,
         ids
       );
+      const seoMap = await this.fetchSeoForIds(ids);
       const wikiResolver = await this.getWikiResolver();
       const siteConfig = await this.getSiteConfig();
       const siteAuthorName = siteConfig.author.name?.trim() || "Unknown";
@@ -419,6 +473,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         const html = passwordGated ? "" : rawHtml;
         const tagLabels = tagsByContentId.get(row.id) ?? [];
         const catSlugs = catsByContentId.get(row.id) ?? [];
+        const seo = seoMap.get(row.id);
 
         const post: Post = {
           slug: row.slug,
@@ -433,6 +488,7 @@ export class DrizzleContentAdapter implements ContentRepository {
           sticky: fromBool01(row.sticky),
           author: row.author_label?.trim() || siteAuthorName,
           ...(row.cover_image ? { coverImage: row.cover_image } : {}),
+          ...(seo ? { seo } : {}),
           visibility: (row.visibility ?? "public") as
             | "public"
             | "private"
@@ -516,6 +572,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       termRows,
       ids
     );
+    const seoMap = await this.fetchSeoForIds(ids);
 
     const wikiResolver = await this.getWikiResolver();
     const siteConfig = await this.getSiteConfig();
@@ -537,6 +594,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       const html = passwordGated ? "" : rawHtml;
       const tagLabels = tagsByContentId.get(row.id) ?? [];
       const catSlugs = catsByContentId.get(row.id) ?? [];
+      const seo = seoMap.get(row.id);
 
       posts.push({
         slug: row.slug,
@@ -551,6 +609,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         sticky: fromBool01(row.sticky),
         author: row.author_label?.trim() || siteAuthorName,
         ...(row.cover_image ? { coverImage: row.cover_image } : {}),
+        ...(seo ? { seo } : {}),
         visibility: (row.visibility ?? "public") as
           | "public"
           | "private"
@@ -601,6 +660,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       termRows,
       [row.id]
     );
+    const seoMap = await this.fetchSeoForIds([row.id]);
 
     const wikiResolver = await this.getWikiResolver();
     const body = row.body_markdown;
@@ -612,6 +672,7 @@ export class DrizzleContentAdapter implements ContentRepository {
 
     const siteConfig = await this.getSiteConfig();
     const siteAuthorName = siteConfig.author.name?.trim() || "Unknown";
+    const seo = seoMap.get(row.id);
 
     return {
       slug: row.slug,
@@ -626,6 +687,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       sticky: fromBool01(row.sticky),
       author: row.author_label?.trim() || siteAuthorName,
       ...(row.cover_image ? { coverImage: row.cover_image } : {}),
+      ...(seo ? { seo } : {}),
       visibility: (row.visibility ?? "public") as
         | "public"
         | "private"
@@ -660,6 +722,7 @@ export class DrizzleContentAdapter implements ContentRepository {
     if (options?.query !== undefined) {
       const allRows = await this.db
         .select({
+          id: content.id,
           slug: content.slug,
           title: content.title,
           status: content.status,
@@ -672,6 +735,15 @@ export class DrizzleContentAdapter implements ContentRepository {
         .from(content)
         .where(whereClause)
         .orderBy(...orderBy);
+
+      const pageIds = allRows.map((r: { id: string }) => r.id);
+      const querySeoMap = await this.fetchSeoForIds(pageIds);
+      // Build a slug → seo map for use in the ranked-pages mapping step.
+      const slugToSeo = new Map<string, PostSeo>();
+      for (const r of allRows) {
+        const seo = querySeoMap.get(r.id);
+        if (seo) slugToSeo.set(r.slug, seo);
+      }
 
       const wikiResolver = await this.getWikiResolver();
       const bodyBySlug = new Map<string, string>();
@@ -715,6 +787,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       const ranked = applySearch(entries, options.query);
       const rankedPages = ranked.map((post) => {
         const original = allPages.find((p) => p.slug === post.slug);
+        const seo = slugToSeo.get(post.slug);
         return {
           slug: post.slug,
           title: post.title,
@@ -724,7 +797,7 @@ export class DrizzleContentAdapter implements ContentRepository {
           html: post.html,
           menuOrder: original?.menuOrder ?? 0,
           ...(original?.parent ? { parent: original.parent } : {}),
-          ...(original?.seo ? { seo: original.seo } : {}),
+          ...(seo ? { seo } : {}),
         };
       });
 
@@ -748,6 +821,7 @@ export class DrizzleContentAdapter implements ContentRepository {
 
     const pageRows = await this.db
       .select({
+        id: content.id,
         slug: content.slug,
         title: content.title,
         status: content.status,
@@ -763,6 +837,9 @@ export class DrizzleContentAdapter implements ContentRepository {
       .limit(pageSize)
       .offset(offset);
 
+    const pageRowIds = pageRows.map((r: { id: string }) => r.id);
+    const pushdownSeoMap = await this.fetchSeoForIds(pageRowIds);
+
     const wikiResolver = await this.getWikiResolver();
     const pages: Page[] = [];
 
@@ -770,6 +847,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       const body = row.body_markdown;
       const excerpt = row.excerpt ?? autoExcerpt(body);
       const { html } = await renderMarkdown(body, { wikiResolver });
+      const seo = pushdownSeoMap.get(row.id);
       pages.push({
         slug: row.slug,
         title: row.title,
@@ -779,6 +857,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         html,
         menuOrder: row.menu_order ?? 0,
         ...(row.parent_id ? { parent: row.parent_id } : {}),
+        ...(seo ? { seo } : {}),
       });
     }
 
@@ -793,6 +872,7 @@ export class DrizzleContentAdapter implements ContentRepository {
     const includeDrafts = shouldIncludeDrafts(options);
 
     const rows: Array<{
+      id: string;
       slug: string;
       title: string;
       status: string;
@@ -811,6 +891,9 @@ export class DrizzleContentAdapter implements ContentRepository {
 
     if (row.status === "draft" && !includeDrafts) return null;
 
+    const getPageSeoMap = await this.fetchSeoForIds([row.id]);
+    const seo = getPageSeoMap.get(row.id);
+
     const wikiResolver = await this.getWikiResolver();
     const body = row.body_markdown;
     const { html } = await renderMarkdown(body, { wikiResolver });
@@ -825,6 +908,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       html,
       menuOrder: row.menu_order ?? 0,
       ...(row.parent_id ? { parent: row.parent_id } : {}),
+      ...(seo ? { seo } : {}),
     };
   }
 

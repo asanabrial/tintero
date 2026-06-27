@@ -211,6 +211,39 @@ async function makeDrizzleHarness(): Promise<Harness> {
         return id;
       }
 
+      // SEO field keys in insertion order (mirrors backfill.ts SEO_FIELDS)
+      const SEO_FIELDS = [
+        "title",
+        "metaDescription",
+        "focusKeyphrase",
+        "canonical",
+        "noindex",
+        "ogImage",
+        "cornerstone",
+      ] as const;
+
+      async function insertSeoMeta(
+        contentId: string,
+        seo: Record<string, unknown>
+      ): Promise<void> {
+        for (const field of SEO_FIELDS) {
+          const value = seo[field];
+          if (value === undefined) continue;
+          const metaValue =
+            typeof value === "boolean"
+              ? value
+                ? "true"
+                : "false"
+              : String(value);
+          await db.insert(schema.content_meta).values({
+            id: newId(),
+            content_id: contentId,
+            meta_key: `seo.${field}`,
+            meta_value: metaValue,
+          });
+        }
+      }
+
       // Seed posts
       for (const post of data.posts ?? []) {
         const contentId = newId();
@@ -259,6 +292,11 @@ async function makeDrizzleHarness(): Promise<Harness> {
             term_id: termId,
           });
         }
+
+        // SEO content_meta rows (mirrors backfill SEO path)
+        if (post.seo !== undefined) {
+          await insertSeoMeta(contentId, post.seo as Record<string, unknown>);
+        }
       }
 
       // Seed pages
@@ -285,6 +323,11 @@ async function makeDrizzleHarness(): Promise<Harness> {
           created_at: now,
           updated_at: now,
         });
+
+        // SEO content_meta rows for pages
+        if (page.seo !== undefined) {
+          await insertSeoMeta(contentId, page.seo as Record<string, unknown>);
+        }
       }
 
       // Write YAML config files for getSiteConfig / listTags / listCategories

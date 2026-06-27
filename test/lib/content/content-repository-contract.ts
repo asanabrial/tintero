@@ -13,6 +13,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import type { ContentRepository } from "@/lib/content/ports";
+import type { PostSeo } from "@/lib/content/types";
 
 // ============================================================
 // Harness contract
@@ -33,6 +34,7 @@ export interface SeedPost {
   comments?: boolean;
   sticky?: boolean;
   coverImage?: string;
+  seo?: PostSeo;
 }
 
 export interface SeedPage {
@@ -44,6 +46,7 @@ export interface SeedPage {
   excerpt?: string;
   parent?: string;
   menuOrder?: number;
+  seo?: PostSeo;
 }
 
 export interface SeedTaxonomy {
@@ -108,6 +111,15 @@ const STANDARD_SEED: SeedData = {
       author: "Alice",
       body: "Alpha body content. This links to [[Beta Post]].",
       coverImage: "/uploads/alpha-cover.jpg",
+      seo: {
+        title: "Alpha SEO Title",
+        metaDescription: "Alpha meta description",
+        focusKeyphrase: "alpha typescript",
+        canonical: "https://example.com/alpha",
+        noindex: true,
+        ogImage: "/uploads/alpha-og.jpg",
+        cornerstone: false,
+      },
     },
     {
       slug: "beta",
@@ -190,6 +202,10 @@ const STANDARD_SEED: SeedData = {
       status: "published",
       body: "About us.",
       menuOrder: 0,
+      seo: {
+        title: "About SEO Title",
+        noindex: false,
+      },
     },
     {
       slug: "contact",
@@ -403,6 +419,31 @@ export function runContentRepositoryContract(
       });
 
       /**
+       * seo projection via listPosts — parity with FilesystemContentAdapter.
+       *
+       * The FS oracle uses conditional-spread semantics: seo key absent when no seo data.
+       * alpha has full seo (all 7 fields); beta does NOT — seo key must be absent.
+       * Booleans (noindex, cornerstone) must be real JS booleans, not strings.
+       */
+      test("seo: post with seo returns the seo object via listPosts", async () => {
+        const { posts } = await harness.repo.listPosts({ includeDrafts: false });
+        const alpha = posts.find((p) => p.slug === "alpha");
+        expect(alpha).toBeDefined();
+        expect(alpha!.seo).toBeDefined();
+        expect(alpha!.seo!.title).toBe("Alpha SEO Title");
+        expect(alpha!.seo!.metaDescription).toBe("Alpha meta description");
+        expect(alpha!.seo!.noindex).toBe(true);   // must be boolean true, not string "true"
+        expect(alpha!.seo!.cornerstone).toBe(false); // must be boolean false, not string "false"
+      });
+
+      test("seo: post without seo has seo === undefined via listPosts", async () => {
+        const { posts } = await harness.repo.listPosts({ includeDrafts: false });
+        const beta = posts.find((p) => p.slug === "beta");
+        expect(beta).toBeDefined();
+        expect(beta!.seo).toBeUndefined();
+      });
+
+      /**
        * adminStatus filter — CONTRACT NOTE:
        *
        * `adminStatus` runs AFTER the includeDrafts gate. To exercise all three
@@ -503,6 +544,30 @@ export function runContentRepositoryContract(
         expect(post!.coverImage).toBeUndefined();
       });
 
+      /**
+       * seo projection via getPost — parity with FilesystemContentAdapter.
+       *
+       * alpha has all 7 seo fields; beta has none. Booleans must be real booleans.
+       */
+      test("seo: post with seo returns the full seo object via getPost", async () => {
+        const post = await harness.repo.getPost("alpha");
+        expect(post).not.toBeNull();
+        expect(post!.seo).toBeDefined();
+        expect(post!.seo!.title).toBe("Alpha SEO Title");
+        expect(post!.seo!.metaDescription).toBe("Alpha meta description");
+        expect(post!.seo!.focusKeyphrase).toBe("alpha typescript");
+        expect(post!.seo!.canonical).toBe("https://example.com/alpha");
+        expect(post!.seo!.noindex).toBe(true);      // boolean, not string
+        expect(post!.seo!.ogImage).toBe("/uploads/alpha-og.jpg");
+        expect(post!.seo!.cornerstone).toBe(false); // boolean, not string
+      });
+
+      test("seo: post without seo has seo === undefined via getPost", async () => {
+        const post = await harness.repo.getPost("beta");
+        expect(post).not.toBeNull();
+        expect(post!.seo).toBeUndefined();
+      });
+
       test("returns null for an unknown slug", async () => {
         const post = await harness.repo.getPost("no-such-slug-xyzzy");
         expect(post).toBeNull();
@@ -548,6 +613,28 @@ export function runContentRepositoryContract(
         expect(result.total).toBe(1); // only "about" is published
         expect(result.totalPages).toBe(1);
       });
+
+      /**
+       * seo projection via listPages — parity with FilesystemContentAdapter.
+       *
+       * "about" has partial seo (title + noindex:false); "contact" has none.
+       * noindex must be boolean false, not string "false".
+       */
+      test("seo: page with seo returns the seo object via listPages", async () => {
+        const { pages } = await harness.repo.listPages({ includeDrafts: false });
+        const about = pages.find((p) => p.slug === "about");
+        expect(about).toBeDefined();
+        expect(about!.seo).toBeDefined();
+        expect(about!.seo!.title).toBe("About SEO Title");
+        expect(about!.seo!.noindex).toBe(false); // boolean, not string "false"
+      });
+
+      test("seo: page without seo has seo === undefined via listPages", async () => {
+        const { pages } = await harness.repo.listPages({ includeDrafts: true });
+        const contact = pages.find((p) => p.slug === "contact");
+        expect(contact).toBeDefined();
+        expect(contact!.seo).toBeUndefined();
+      });
     });
 
     // ----------------------------------------------------------
@@ -580,6 +667,26 @@ export function runContentRepositoryContract(
         expect(page).not.toBeNull();
         expect(page!.slug).toBe("contact");
         expect(page!.status).toBe("draft");
+      });
+
+      /**
+       * seo projection via getPage — parity with FilesystemContentAdapter.
+       *
+       * "about" has seo.title + seo.noindex:false; "contact" has no seo.
+       * noindex must be real boolean false, not string "false".
+       */
+      test("seo: page with seo returns the seo object via getPage", async () => {
+        const page = await harness.repo.getPage("about");
+        expect(page).not.toBeNull();
+        expect(page!.seo).toBeDefined();
+        expect(page!.seo!.title).toBe("About SEO Title");
+        expect(page!.seo!.noindex).toBe(false); // boolean, not string
+      });
+
+      test("seo: page without seo has seo === undefined via getPage", async () => {
+        const page = await harness.repo.getPage("contact", { includeDrafts: true });
+        expect(page).not.toBeNull();
+        expect(page!.seo).toBeUndefined();
       });
     });
 
