@@ -39,7 +39,7 @@ export function LoginForm() {
           required
         />
       </Field>
-      {state?.error && <FormAlert>{state.error}</FormAlert>}
+      {state?.error && <FormAlert>{tr(`admin.login.errors.${state.error}`)}</FormAlert>}
       <SubmitButton label={tr("admin.login.signIn")} pendingLabel={tr("admin.login.signingIn")} fullWidth />
     </form>
   );

@@ -167,6 +167,10 @@ export const en = {
       password: "Password",
       signIn: "Sign in",
       signingIn: "Signing in…",
+      errors: {
+        invalidCredentials: "Invalid email or password.",
+        notSetUp: "The site isn't fully set up yet. Visit /install to finish setup.",
+      },
     },
     common: {
       save: "Save",
@@ -939,6 +943,10 @@ export const es = {
       password: "Contraseña",
       signIn: "Iniciar sesión",
       signingIn: "Iniciando sesión…",
+      errors: {
+        invalidCredentials: "Correo electrónico o contraseña incorrectos.",
+        notSetUp: "El sitio aún no está configurado completamente. Visita /install para finalizar la configuración.",
+      },
     },
     common: {
       save: "Guardar",
@@ -1712,6 +1720,10 @@ export const fr = {
       password: "Mot de passe",
       signIn: "Se connecter",
       signingIn: "Connexion…",
+      errors: {
+        invalidCredentials: "E-mail ou mot de passe incorrect.",
+        notSetUp: "Le site n'est pas encore entièrement configuré. Rendez-vous sur /install pour terminer la configuration.",
+      },
     },
     common: {
       save: "Enregistrer",
@@ -2477,6 +2489,10 @@ export const de = {
       password: "Passwort",
       signIn: "Anmelden",
       signingIn: "Anmeldung…",
+      errors: {
+        invalidCredentials: "E-Mail-Adresse oder Passwort ist falsch.",
+        notSetUp: "Die Website ist noch nicht vollständig eingerichtet. Besuche /install, um die Einrichtung abzuschließen.",
+      },
     },
     common: {
       save: "Speichern",
@@ -3242,6 +3258,10 @@ export const pt = {
       password: "Palavra-passe",
       signIn: "Iniciar sessão",
       signingIn: "A iniciar sessão…",
+      errors: {
+        invalidCredentials: "E-mail ou palavra-passe incorretos.",
+        notSetUp: "O site ainda não está completamente configurado. Aceda a /install para concluir a configuração.",
+      },
     },
     common: {
       save: "Guardar",
@@ -4007,6 +4027,10 @@ export const it = {
       password: "Password",
       signIn: "Accedi",
       signingIn: "Accesso in corso…",
+      errors: {
+        invalidCredentials: "Email o password non validi.",
+        notSetUp: "Il sito non è ancora completamente configurato. Visita /install per completare la configurazione.",
+      },
     },
     common: {
       save: "Salva",

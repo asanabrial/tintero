@@ -15,7 +15,7 @@ const LoginSchema = z.object({
   password: z.string().min(1),
 });
 
-const GENERIC_ERROR = "Invalid email or password.";
+const GENERIC_ERROR = "invalidCredentials";
 
 /**
  * Server Action: validate credentials, create session, redirect to /admin.
@@ -47,8 +47,7 @@ export async function login(
     user = await getUserRepository().findByEmail(email);
   } catch {
     return {
-      error:
-        "The site isn't fully set up yet. Visit /install to finish setup.",
+      error: "notSetUp",
     };
   }
 
