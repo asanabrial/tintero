@@ -4,18 +4,25 @@
  * All types follow the LCD (lowest-common-denominator) policy from §4.3:
  *   - PKs: app-generated UUID stored as text (no uuid()/defaultRandom()/serial)
  *   - Enums: plain text column (Zod validates at the boundary, not the DB)
- *   - Timestamps: integer (epoch milliseconds, UTC)
- *   - Booleans: integer 0/1
+ *   - Timestamps: bigint({ mode: "number" }) — epoch milliseconds (UTC).
+ *     Millisecond epoch values (~1.75e12) exceed Postgres INT4 max (~2.1e9),
+ *     so PG uses BIGINT (8-byte). SQLite's integer is already 64-bit and is
+ *     unchanged. mode:"number" keeps drizzle returning a JS number (not BigInt),
+ *     consistent with SQLite behaviour and within Number.MAX_SAFE_INTEGER.
+ *   - Booleans: integer 0/1 (sticky, comments_enabled, menu_order, count fit INT4)
  *
  * The logical shape is kept identical to schema.sqlite.ts. The conformance test
  * (test/lib/content/schema-conformance.test.ts) asserts this at the column level
- * using schema-descriptor.ts as the single source of truth.
+ * using schema-descriptor.ts as the single source of truth. Both integer() and
+ * bigint({ mode:"number" }) report dataType:"number" in drizzle introspection,
+ * so both satisfy the descriptor's "integer" logical type tag.
  *
  * Indexes are defined per §3.5 of the architecture design.
  */
 
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
+  bigint,
   index,
   integer,
   pgTable,
@@ -47,9 +54,10 @@ export const content = pgTable(
     comments_enabled: integer("comments_enabled").notNull(),
     parent_id: text("parent_id").references((): AnyPgColumn => content.id),
     menu_order: integer("menu_order").notNull(),
-    published_at: integer("published_at").notNull(),
-    created_at: integer("created_at").notNull(),
-    updated_at: integer("updated_at").notNull(),
+    // Epoch milliseconds — BIGINT required (ms values ~1.75e12 exceed INT4 max ~2.1e9)
+    published_at: bigint("published_at", { mode: "number" }).notNull(),
+    created_at: bigint("created_at", { mode: "number" }).notNull(),
+    updated_at: bigint("updated_at", { mode: "number" }).notNull(),
   },
   (t) => [
     // Unique slug per content type (§10 #5)
@@ -85,8 +93,9 @@ export const terms = pgTable(
     parent_id: text("parent_id").references((): AnyPgColumn => terms.id),
     description_markdown: text("description_markdown"),
     count: integer("count").notNull(),
-    created_at: integer("created_at").notNull(),
-    updated_at: integer("updated_at").notNull(),
+    // Epoch milliseconds — BIGINT required (see content table comment above)
+    created_at: bigint("created_at", { mode: "number" }).notNull(),
+    updated_at: bigint("updated_at", { mode: "number" }).notNull(),
   },
   (t) => [
     // Term lookup by slug; uniqueness scoped per taxonomy
