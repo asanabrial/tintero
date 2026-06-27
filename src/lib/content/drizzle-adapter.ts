@@ -239,8 +239,10 @@ export class DrizzleContentAdapter implements ContentRepository {
    *
    * Tags: stored as terms.label so the original raw string is returned in
    *       Post.tags (matching FilesystemContentAdapter's frontmatter.tags).
-   * Categories: stored as terms.slug (the slugified path), which is the same
-   *       shape slugifyCategory → joinSlug produces from raw frontmatter values.
+   * Categories: stored as terms.label so the original human-readable label is
+   *       returned in Post.categories (matching FilesystemContentAdapter's
+   *       frontmatter.categories). buildCategoryIndex derives the slug by
+   *       applying slugifyCategory → joinSlug to the label, matching the FS path.
    */
   private buildTermMaps(
     termRows: Array<{
@@ -263,11 +265,33 @@ export class DrizzleContentAdapter implements ContentRepository {
       if (row.taxonomy === "tag") {
         tagsByContentId.get(row.content_id)?.push(row.label);
       } else if (row.taxonomy === "category") {
-        catsByContentId.get(row.content_id)?.push(row.slug);
+        // Push the original label (not slug) so Post.categories matches the
+        // FS adapter's frontmatter.categories array (e.g. "Tech", not "tech").
+        catsByContentId.get(row.content_id)?.push(row.label);
       }
     }
 
     return { tagsByContentId, catsByContentId };
+  }
+
+  /**
+   * Resolve a set of content UUIDs to their page slugs.
+   *
+   * Used to convert parent_id UUID values in page rows into the slug string
+   * that FilesystemContentAdapter exposes as Page.parent (the slug is the
+   * stable user-facing identifier; the UUID is an internal DB detail).
+   *
+   * @param ids — Set of content UUIDs to look up (may be empty).
+   * @returns Map from UUID to slug for each matching content row.
+   */
+  private async resolveIdsToSlugs(ids: Set<string>): Promise<Map<string, string>> {
+    if (ids.size === 0) return new Map();
+    const { content } = this.schema;
+    const rows: Array<{ id: string; slug: string }> = await this.db
+      .select({ id: content.id, slug: content.slug })
+      .from(content)
+      .where(inArray(content.id, [...ids]));
+    return new Map(rows.map((r) => [r.id, r.slug]));
   }
 
   /**
@@ -745,6 +769,14 @@ export class DrizzleContentAdapter implements ContentRepository {
         if (seo) slugToSeo.set(r.slug, seo);
       }
 
+      // Resolve parent_id UUIDs to page slugs so Page.parent matches the
+      // FS adapter (which stores the parent slug, not the DB row UUID).
+      const queryParentIds = new Set<string>();
+      for (const r of allRows) {
+        if (r.parent_id) queryParentIds.add(String(r.parent_id));
+      }
+      const queryParentSlugMap = await this.resolveIdsToSlugs(queryParentIds);
+
       const wikiResolver = await this.getWikiResolver();
       const bodyBySlug = new Map<string, string>();
       const allPages: Page[] = [];
@@ -753,6 +785,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         const body = row.body_markdown;
         const excerpt = row.excerpt ?? autoExcerpt(body);
         const { html } = await renderMarkdown(body, { wikiResolver });
+        const parentSlug = row.parent_id ? queryParentSlugMap.get(row.parent_id) : undefined;
         allPages.push({
           slug: row.slug,
           title: row.title,
@@ -761,7 +794,7 @@ export class DrizzleContentAdapter implements ContentRepository {
           excerpt,
           html,
           menuOrder: row.menu_order ?? 0,
-          ...(row.parent_id ? { parent: row.parent_id } : {}),
+          ...(parentSlug ? { parent: parentSlug } : {}),
         });
         bodyBySlug.set(row.slug, body);
       }
@@ -840,6 +873,13 @@ export class DrizzleContentAdapter implements ContentRepository {
     const pageRowIds = pageRows.map((r: { id: string }) => r.id);
     const pushdownSeoMap = await this.fetchSeoForIds(pageRowIds);
 
+    // Resolve parent_id UUIDs to page slugs.
+    const parentIds = new Set<string>();
+    for (const r of pageRows) {
+      if (r.parent_id) parentIds.add(String(r.parent_id));
+    }
+    const parentSlugMap = await this.resolveIdsToSlugs(parentIds);
+
     const wikiResolver = await this.getWikiResolver();
     const pages: Page[] = [];
 
@@ -848,6 +888,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       const excerpt = row.excerpt ?? autoExcerpt(body);
       const { html } = await renderMarkdown(body, { wikiResolver });
       const seo = pushdownSeoMap.get(row.id);
+      const parentSlug = row.parent_id ? parentSlugMap.get(row.parent_id) : undefined;
       pages.push({
         slug: row.slug,
         title: row.title,
@@ -856,7 +897,7 @@ export class DrizzleContentAdapter implements ContentRepository {
         excerpt,
         html,
         menuOrder: row.menu_order ?? 0,
-        ...(row.parent_id ? { parent: row.parent_id } : {}),
+        ...(parentSlug ? { parent: parentSlug } : {}),
         ...(seo ? { seo } : {}),
       });
     }
@@ -894,6 +935,12 @@ export class DrizzleContentAdapter implements ContentRepository {
     const getPageSeoMap = await this.fetchSeoForIds([row.id]);
     const seo = getPageSeoMap.get(row.id);
 
+    // Resolve parent_id UUID → parent page slug.
+    const getPageParentSlugMap = await this.resolveIdsToSlugs(
+      row.parent_id ? new Set([row.parent_id]) : new Set()
+    );
+    const parentSlug = row.parent_id ? getPageParentSlugMap.get(row.parent_id) : undefined;
+
     const wikiResolver = await this.getWikiResolver();
     const body = row.body_markdown;
     const { html } = await renderMarkdown(body, { wikiResolver });
@@ -907,7 +954,7 @@ export class DrizzleContentAdapter implements ContentRepository {
       excerpt,
       html,
       menuOrder: row.menu_order ?? 0,
-      ...(row.parent_id ? { parent: row.parent_id } : {}),
+      ...(parentSlug ? { parent: parentSlug } : {}),
       ...(seo ? { seo } : {}),
     };
   }
@@ -1037,13 +1084,13 @@ export class DrizzleContentAdapter implements ContentRepository {
     const ids = filtered.map((r) => r.id);
     const catTerms: Array<{
       content_id: string;
-      slug: string;
+      label: string;
     }> =
       ids.length > 0
         ? await this.db
             .select({
               content_id: term_relationships.content_id,
-              slug: terms.slug,
+              label: terms.label,
             })
             .from(term_relationships)
             .innerJoin(terms, eq(term_relationships.term_id, terms.id))
@@ -1059,12 +1106,15 @@ export class DrizzleContentAdapter implements ContentRepository {
       ids.map((id) => [id, []])
     );
     for (const rel of catTerms) {
-      catsByContentId.get(rel.content_id)?.push(rel.slug);
+      // Push the original label (e.g. "Tech", not "tech") so buildCategoryIndex
+      // derives the human-readable Category.label, matching the FS adapter path.
+      catsByContentId.get(rel.content_id)?.push(rel.label);
     }
 
-    // Pass term slugs as "raw" category strings — slugifyCategory("tech/javascript")
-    // correctly derives segments ["tech","javascript"], which makes buildCategoryIndex
-    // perform prefix expansion identical to the FS adapter path.
+    // Pass original category labels as "raw" category strings.
+    // slugifyCategory("Tech/JavaScript") correctly derives segments
+    // ["tech","javascript"], making buildCategoryIndex produce the same
+    // prefix expansion as the FS adapter.
     const rawCategoriesPerPost = filtered.map(
       (r) => catsByContentId.get(r.id) ?? []
     );
