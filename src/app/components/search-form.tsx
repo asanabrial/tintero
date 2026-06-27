@@ -2,7 +2,12 @@ import { t } from "@/lib/i18n";
 
 interface SearchFormProps {
   defaultValue?: string;
-  locale?: string;
+  /**
+   * Required: the site language. Every caller MUST pass it so the form labels
+   * are localized. It is intentionally NOT optional — a previous "?? en" default
+   * silently rendered English labels on non-English sites when callers forgot it.
+   */
+  locale: string;
 }
 
 /**
@@ -12,7 +17,7 @@ interface SearchFormProps {
  * (inside Suspense) to avoid forcing the shell into dynamic rendering.
  */
 export function SearchForm({ defaultValue, locale }: SearchFormProps) {
-  const loc = locale ?? "en";
+  const loc = locale;
   return (
     <form method="GET" action="/blog/search" role="search" className="flex items-center gap-2">
       <label htmlFor="site-search" className="sr-only">

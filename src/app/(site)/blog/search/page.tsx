@@ -28,7 +28,7 @@ export default async function SearchPage({
       </h1>
       <div className="mb-8">
         {/* No defaultValue — shell stays static (ADR-4) */}
-        <SearchForm />
+        <SearchForm locale={config.language} />
       </div>
       <Suspense
         fallback={
