@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS content (
   menu_order INTEGER NOT NULL,
   published_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_content_type_slug
@@ -63,6 +64,9 @@ CREATE INDEX IF NOT EXISTS idx_content_parent_id
 
 CREATE INDEX IF NOT EXISTS idx_content_author_id
   ON content (author_id);
+
+CREATE INDEX IF NOT EXISTS idx_content_deleted_at
+  ON content (deleted_at);
 
 CREATE TABLE IF NOT EXISTS terms (
   id TEXT PRIMARY KEY,
@@ -128,7 +132,8 @@ CREATE TABLE IF NOT EXISTS content (
   menu_order INTEGER NOT NULL,
   published_at BIGINT NOT NULL,
   created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL
+  updated_at BIGINT NOT NULL,
+  deleted_at BIGINT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_content_type_slug
@@ -145,6 +150,9 @@ CREATE INDEX IF NOT EXISTS idx_content_parent_id
 
 CREATE INDEX IF NOT EXISTS idx_content_author_id
   ON content (author_id);
+
+CREATE INDEX IF NOT EXISTS idx_content_deleted_at
+  ON content (deleted_at);
 
 CREATE TABLE IF NOT EXISTS terms (
   id TEXT PRIMARY KEY,

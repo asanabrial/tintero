@@ -251,6 +251,11 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
         published_at: toEpoch(post.date),
         created_at: now,
         updated_at: now,
+        // A live FS file is always untrashed — set deleted_at = null on INSERT.
+        // Intentionally omitted from onConflictDoUpdate: a row trashed in the DB
+        // must stay trashed across re-backfill (the FS file re-asserting itself
+        // should not silently un-trash it).
+        deleted_at: null,
       })
       .onConflictDoUpdate({
         target: [schema.content.type, schema.content.slug],
@@ -268,6 +273,8 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
           menu_order: 0,
           published_at: toEpoch(post.date),
           updated_at: now,
+          // deleted_at is NOT updated here — a trashed row must remain trashed
+          // even when the source FS file still exists (re-backfill ≠ un-trash).
         },
       })
       .returning({ id: schema.content.id });
@@ -307,6 +314,10 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
         published_at: toEpoch(page.date),
         created_at: now,
         updated_at: now,
+        // A live FS file is always untrashed — set deleted_at = null on INSERT.
+        // Intentionally omitted from onConflictDoUpdate: a row trashed in the DB
+        // must stay trashed across re-backfill (see posts section above).
+        deleted_at: null,
       })
       .onConflictDoUpdate({
         target: [schema.content.type, schema.content.slug],
@@ -318,6 +329,8 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
           menu_order: page.menuOrder ?? 0,
           published_at: toEpoch(page.date),
           updated_at: now,
+          // deleted_at is NOT updated here — a trashed row must remain trashed
+          // even when the source FS file still exists (re-backfill ≠ un-trash).
         },
       })
       .returning({ id: schema.content.id });
