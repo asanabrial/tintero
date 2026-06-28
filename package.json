@@ -14,7 +14,8 @@
     "backfill": "bun run scripts/backfill.ts",
     "db:content:push:pg": "drizzle-kit push --config=drizzle.content.pg.config.ts",
     "db:content:push:sqlite": "drizzle-kit push --config=drizzle.content.sqlite.config.ts",
-    "db:content:push:mysql": "drizzle-kit push --config=drizzle.content.mysql.config.ts"
+    "db:content:push:mysql": "drizzle-kit push --config=drizzle.content.mysql.config.ts && bun run db:content:collation:mysql",
+    "db:content:collation:mysql": "bun run scripts/apply-mysql-collation.ts"
   },
   "dependencies": {
     "@joplin/turndown-plugin-gfm": "^1.0.67",
