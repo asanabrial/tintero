@@ -12,14 +12,44 @@
  */
 import { describe, expect, test } from "bun:test";
 import { getTableColumns } from "drizzle-orm";
+import { getTableConfig as mysqlGetTableConfig } from "drizzle-orm/mysql-core";
 import { getTableConfig as pgGetTableConfig } from "drizzle-orm/pg-core";
 import { getTableConfig as sqliteGetTableConfig } from "drizzle-orm/sqlite-core";
 import {
   SCHEMA_DESCRIPTOR,
   type LogicalType,
 } from "../../../src/lib/content/schema-descriptor";
+import * as mysqlSchema from "../../../src/lib/content/schema.mysql";
 import * as pgSchema from "../../../src/lib/content/schema.pg";
 import * as sqliteSchema from "../../../src/lib/content/schema.sqlite";
+
+// ------------------------------------------------------------------
+// MySQL-only physical helper columns + index relaxations
+// ------------------------------------------------------------------
+//
+// MySQL has no partial unique indexes. To replicate pg/sqlite's
+// `UNIQUE (type, slug) WHERE deleted_at IS NULL`, schema.mysql.ts adds a STORED
+// generated column `live_slug_key` (= CONCAT(type, 0x1f, slug) for live rows,
+// NULL for trashed) and a plain UNIQUE index on it. MySQL treats NULLs as
+// distinct in unique indexes, so trashed rows never collide while live rows
+// enforce unique (type, slug).
+//
+// `live_slug_key` is therefore a MySQL-ONLY physical column that does NOT exist
+// in the logical descriptor. The allowlist below tells the column-set check to
+// ignore it WITHOUT weakening the pg/sqlite checks (which never see it). The
+// index-column override maps the descriptor's `idx_content_type_slug` (logically
+// on type,slug) to its physical MySQL column (`live_slug_key`) so the index
+// name/uniqueness assertion stays green for the dialect.
+
+/** Per-table physical columns that exist only in the MySQL schema. */
+const MYSQL_ONLY_COLUMNS: Partial<Record<keyof typeof SCHEMA_DESCRIPTOR, string[]>> = {
+  content: ["live_slug_key"],
+};
+
+/** Per-index physical-column override for MySQL (relaxes the partial-index substitution). */
+const MYSQL_INDEX_COLUMN_OVERRIDES: Record<string, string[]> = {
+  idx_content_type_slug: ["live_slug_key"],
+};
 
 // ------------------------------------------------------------------
 // Helpers
@@ -37,6 +67,10 @@ function getPgCols(tableName: keyof typeof pgSchema) {
 
 function getSqliteCols(tableName: keyof typeof sqliteSchema) {
   return getTableColumns(sqliteSchema[tableName] as AnyDrizzleTable);
+}
+
+function getMysqlCols(tableName: keyof typeof mysqlSchema) {
+  return getTableColumns(mysqlSchema[tableName] as AnyDrizzleTable);
 }
 
 function toLogicalType(col: DrizzleColumnLike): LogicalType {
@@ -111,6 +145,12 @@ describe("schema conformance — dialect drift detection", () => {
     expect(sqliteTableNames).toEqual(expected);
   });
 
+  test("mysql schema exports all tables in the descriptor (no extras, no missing)", () => {
+    const mysqlTableNames = Object.keys(mysqlSchema).sort();
+    const expected = [...tableNames].sort();
+    expect(mysqlTableNames).toEqual(expected);
+  });
+
   // ------------------------------------------------------------------
   // Per-table checks
   // ------------------------------------------------------------------
@@ -133,6 +173,15 @@ describe("schema conformance — dialect drift detection", () => {
         );
       });
 
+      test("mysql: column names match descriptor (mysql-only helper columns excluded)", () => {
+        const cols = getMysqlCols(tableName);
+        const mysqlOnly = MYSQL_ONLY_COLUMNS[tableName] ?? [];
+        const actual = Object.keys(cols)
+          .filter((name) => !mysqlOnly.includes(name))
+          .sort();
+        expect(actual).toEqual(Object.keys(descriptor.columns).sort());
+      });
+
       test("pg: column logical types match descriptor", () => {
         const cols = getPgCols(tableName);
         for (const [colName, expectedType] of Object.entries(
@@ -146,6 +195,17 @@ describe("schema conformance — dialect drift detection", () => {
 
       test("sqlite: column logical types match descriptor", () => {
         const cols = getSqliteCols(tableName);
+        for (const [colName, expectedType] of Object.entries(
+          descriptor.columns
+        )) {
+          const col = cols[colName] as DrizzleColumnLike | undefined;
+          expect(col).toBeDefined();
+          expect(toLogicalType(col!)).toBe(expectedType);
+        }
+      });
+
+      test("mysql: column logical types match descriptor", () => {
+        const cols = getMysqlCols(tableName);
         for (const [colName, expectedType] of Object.entries(
           descriptor.columns
         )) {
@@ -172,18 +232,22 @@ describe("schema conformance — dialect drift detection", () => {
         }
       });
 
-      test("pk columns are NOT NULL in both dialects", () => {
+      test("pk columns are NOT NULL in all dialects", () => {
         const pgCols = getPgCols(tableName);
         const sqliteCols = getSqliteCols(tableName);
+        const mysqlCols = getMysqlCols(tableName);
 
         for (const pkCol of descriptor.pk) {
           const pgCol = pgCols[pkCol] as DrizzleColumnLike | undefined;
           const sqliteCol = sqliteCols[pkCol] as DrizzleColumnLike | undefined;
+          const mysqlCol = mysqlCols[pkCol] as DrizzleColumnLike | undefined;
           expect(pgCol).toBeDefined();
           expect(sqliteCol).toBeDefined();
-          // PK columns must be NOT NULL in both dialects — a nullable PK is a schema bug
+          expect(mysqlCol).toBeDefined();
+          // PK columns must be NOT NULL in every dialect — a nullable PK is a schema bug
           expect(pgCol!.notNull).toBe(true);
           expect(sqliteCol!.notNull).toBe(true);
+          expect(mysqlCol!.notNull).toBe(true);
         }
       });
 
@@ -213,6 +277,21 @@ describe("schema conformance — dialect drift detection", () => {
 
           expect(pgPkCols).toEqual([...descriptor.pk].sort());
           expect(sqlitePkCols).toEqual([...descriptor.pk].sort());
+        });
+
+        test("composite pk: primaryKey() constraint declared in mysql", () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const mysqlPks = mysqlGetTableConfig(mysqlSchema[tableName] as any)
+            .primaryKeys;
+
+          expect(mysqlPks).toHaveLength(1);
+
+          const mysqlPkCols = mysqlPks[0].columns
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .map((c: any) => c.name)
+            .sort() as string[];
+
+          expect(mysqlPkCols).toEqual([...descriptor.pk].sort());
         });
       }
 
@@ -267,6 +346,36 @@ describe("schema conformance — dialect drift detection", () => {
             name: idx.name,
             unique: idx.unique,
             columns: idx.columns.map((c) => c.name),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        expect(actual).toEqual(expected);
+      });
+
+      test("mysql: indexes match descriptor (name, columns, uniqueness — direction not asserted)", () => {
+        // getTableConfig returns opaque mysql-specific types — cast to any[] at
+        // the boundary to avoid importing internal Drizzle mysql index types.
+        /* eslint-disable @typescript-eslint/no-explicit-any */
+        const cfg = mysqlGetTableConfig(mysqlSchema[tableName] as any);
+        const actual = (cfg.indexes as any[])
+          .map((idx: any) => ({
+            name: idx.config.name as string,
+            // mysql sets unique=false for plain index(); default for safety
+            unique: (idx.config.unique ?? false) as boolean,
+            // mysql columns are raw column objects — extract name only (no direction)
+            columns: (idx.config.columns as any[]).map((c: any) => c.name as string),
+          }))
+          .sort((a: any, b: any) => a.name.localeCompare(b.name));
+        /* eslint-enable @typescript-eslint/no-explicit-any */
+
+        const expected = descriptor.indexes
+          .map((idx) => ({
+            name: idx.name,
+            unique: idx.unique,
+            // Relax the partial-index substitution: MySQL replaces the logical
+            // (type, slug) partial unique index with a plain unique index on the
+            // STORED generated `live_slug_key` column. Other indexes port directly.
+            columns: MYSQL_INDEX_COLUMN_OVERRIDES[idx.name] ?? idx.columns.map((c) => c.name),
           }))
           .sort((a, b) => a.name.localeCompare(b.name));
 

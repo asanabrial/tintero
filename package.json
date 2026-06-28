@@ -13,18 +13,20 @@
     "postinstall": "bun run scripts/sync-calamo.ts",
     "backfill": "bun run scripts/backfill.ts",
     "db:content:push:pg": "drizzle-kit push --config=drizzle.content.pg.config.ts",
-    "db:content:push:sqlite": "drizzle-kit push --config=drizzle.content.sqlite.config.ts"
+    "db:content:push:sqlite": "drizzle-kit push --config=drizzle.content.sqlite.config.ts",
+    "db:content:push:mysql": "drizzle-kit push --config=drizzle.content.mysql.config.ts"
   },
   "dependencies": {
-    "calamo": "file:../calamo",
     "@joplin/turndown-plugin-gfm": "^1.0.67",
     "@shikijs/rehype": "^4.2.0",
     "@tailwindcss/typography": "^0.5.20",
     "bcryptjs": "^3.0.3",
+    "calamo": "file:../calamo",
     "drizzle-orm": "^0.45.2",
     "fast-xml-parser": "^5.8.0",
     "gray-matter": "^4.0.3",
     "jose": "^6.2.3",
+    "mysql2": "^3.22.5",
     "next": "16.2.9",
     "pg": "^8.21.0",
     "react": "19.2.7",
