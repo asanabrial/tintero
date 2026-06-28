@@ -1,7 +1,7 @@
 /**
  * Shadow parity integration test — Phase 3 exit criterion.
  *
- * Seeds a temp FS corpus, runs runBackfill to populate an in-memory SQLite DB,
+ * Seeds a temp FS corpus, runs runBackfill to populate an isolated libSQL DB,
  * then calls ALL 10 ContentRepository methods through ShadowContentAdapter and
  * asserts that the captured divergence list is EMPTY.
  *
@@ -20,14 +20,13 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
 import * as schema from "@/lib/content/schema.sqlite";
 import { FilesystemContentAdapter } from "@/lib/content/fs-adapter";
 import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
 import { runBackfill } from "@/lib/content/backfill";
 import { ShadowContentAdapter } from "@/lib/content/shadow-adapter";
 import type { ShadowDivergence } from "@/lib/content/shadow-adapter";
+import { makeTestContentDb } from "./make-test-content-db";
 
 // ============================================================
 // DDL (matches schema.sqlite.ts — mirrors contract test)
@@ -308,7 +307,7 @@ let fsAdapter: FilesystemContentAdapter;
 let drizzleAdapter: DrizzleContentAdapter;
 let shadow: ShadowContentAdapter;
 let captured: ShadowDivergence[];
-let sqliteDb: Database;
+let closeDb: () => void;
 
 beforeAll(async () => {
   // 1. Create temp directory structure
@@ -362,10 +361,9 @@ beforeAll(async () => {
   // 5. Create FS adapter (primary)
   fsAdapter = new FilesystemContentAdapter(contentDir);
 
-  // 6. Create in-memory SQLite DB + Drizzle adapter (secondary)
-  sqliteDb = new Database(":memory:");
-  sqliteDb.exec(DDL);
-  const db = drizzle(sqliteDb, { schema });
+  // 6. Create isolated libSQL DB + Drizzle adapter (secondary)
+  const { db, cleanup } = await makeTestContentDb(DDL);
+  closeDb = cleanup;
   drizzleAdapter = new DrizzleContentAdapter(db, configDir, schema);
 
   // 7. Run backfill to populate DB from FS
@@ -386,7 +384,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  sqliteDb?.close();
+  closeDb?.();
   await fs.rm(tmpBase, { recursive: true, force: true });
 });
 

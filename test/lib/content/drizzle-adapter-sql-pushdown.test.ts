@@ -4,8 +4,8 @@
  * These tests prove that listPosts / listPages push structural filters and
  * pagination into SQL — they do NOT load the whole corpus into TypeScript.
  *
- * Mechanism: a thin wrapper around the bun:sqlite Database intercepts every
- * prepared statement and throws a "SQL pushdown assertion" error if a query
+ * Mechanism: a thin wrapper around the libSQL client intercepts every
+ * `execute` call and throws a "SQL pushdown assertion" error if a query
  * that selects body_markdown returns more rows than the per-page limit.
  * The OLD fetch-all-then-filter-in-TS code hits this limit; the SQL-pushdown
  * code returns only pageSize rows and passes cleanly.
@@ -15,14 +15,15 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
+import { drizzle } from "drizzle-orm/libsql";
+import type { Client, InStatement } from "@libsql/client";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as schema from "@/lib/content/schema.sqlite";
 import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
 import { newId, toEpoch, nowEpoch } from "@/lib/content/db-values";
+import { makeTestContentDb, type TestContentDb } from "./make-test-content-db";
 
 // ---------------------------------------------------------------------------
 // DDL (mirrors drizzle-content-repository.contract.test.ts exactly)
@@ -116,7 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_content_meta_content_id_meta_key
 // ---------------------------------------------------------------------------
 
 /**
- * Wraps a bun:sqlite Database so that any prepared statement which:
+ * Wraps a libSQL client so that any `execute` call whose statement:
  *   (a) selects body_markdown from the content table, AND
  *   (b) returns more than maxBodyRows rows
  * throws a descriptive error.
@@ -124,61 +125,46 @@ CREATE INDEX IF NOT EXISTS idx_content_meta_content_id_meta_key
  * The OLD fetch-all-then-filter code hits this limit (returns all N rows);
  * the SQL-pushdown code applies LIMIT in SQL and passes cleanly.
  *
- * Both .all() and .values() are intercepted because drizzle uses .values()
- * for field-mapped selects (the new explicit-column select path) and .all()
- * for schema-wide selects (the old select() path).
+ * drizzle-orm/libsql routes every query (.all(), .values(), .get()) through
+ * `client.execute({ sql, args })` and reads `result.rows`, so intercepting
+ * `execute` catches the full-corpus body fetch the OLD code would issue.
  */
 function createRowLimitDb(
-  rawDb: Database,
+  client: Client,
   maxBodyRows: number
-): ReturnType<typeof drizzle> {
-  const wrappedClient = {
-    prepare(sql: string) {
-      const stmt = rawDb.prepare(sql);
+): TestContentDb {
+  const wrappedClient = new Proxy(client, {
+    get(target, prop, receiver) {
+      if (prop === "execute") {
+        return async (stmt: InStatement, ...rest: unknown[]) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await (target.execute as any)(stmt, ...rest);
 
-      // A query is a "full body fetch" if it selects body_markdown (full post
-      // content) and is not a COUNT aggregate. The wikiResolver and terms
-      // queries are excluded because they don't select body_markdown.
-      const sqlLower = sql.toLowerCase();
-      const isFullBodyFetch =
-        sql.includes("body_markdown") && !sqlLower.includes("count(");
+          // A query is a "full body fetch" if it selects body_markdown (full
+          // post content) and is not a COUNT aggregate. The terms queries are
+          // excluded because they don't select body_markdown.
+          const sql = typeof stmt === "string" ? stmt : stmt.sql;
+          const sqlLower = sql.toLowerCase();
+          const isFullBodyFetch =
+            sql.includes("body_markdown") && !sqlLower.includes("count(");
 
-      return {
-        all(...args: Parameters<typeof stmt.all>) {
-          const rows = stmt.all(...args) as unknown[];
-          if (isFullBodyFetch && rows.length > maxBodyRows) {
+          if (isFullBodyFetch && result.rows.length > maxBodyRows) {
             throw new Error(
               `SQL pushdown assertion violated: a body_markdown query returned ` +
-                `${rows.length} rows (limit: ${maxBodyRows}). ` +
+                `${result.rows.length} rows (limit: ${maxBodyRows}). ` +
                 `This indicates the OLD fetch-all-then-filter-in-TS pattern. ` +
                 `Apply SQL LIMIT so only the requested page is loaded.`
             );
           }
-          return rows;
-        },
-        values(...args: Parameters<typeof stmt.values>) {
-          const rows = stmt.values(...args) as unknown[];
-          if (isFullBodyFetch && rows.length > maxBodyRows) {
-            throw new Error(
-              `SQL pushdown assertion violated: a body_markdown query returned ` +
-                `${rows.length} rows (limit: ${maxBodyRows}). ` +
-                `Apply SQL LIMIT to prevent corpus scan.`
-            );
-          }
-          return rows;
-        },
-        run: (...args: Parameters<typeof stmt.run>) => stmt.run(...args),
-        get: (...args: Parameters<typeof stmt.get>) => stmt.get(...args),
-      };
+          return result;
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
     },
-    exec: rawDb.exec.bind(rawDb),
-    transaction: rawDb.transaction.bind(rawDb),
-    close: rawDb.close.bind(rawDb),
-  };
+  });
 
-  // Cast to Database: the wrapped client satisfies drizzle's duck-typed
-  // interface (exec + prepare), even though it is not a real Database instance.
-  return drizzle(wrappedClient as unknown as Database, { schema });
+  return drizzle(wrappedClient, { schema });
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +183,7 @@ interface SeedPostRow {
 }
 
 async function seedPostRows(
-  db: ReturnType<typeof drizzle>,
+  db: TestContentDb,
   rows: SeedPostRow[]
 ): Promise<void> {
   const now = nowEpoch();
@@ -267,7 +253,7 @@ async function seedPostRows(
 }
 
 async function seedPageRows(
-  db: ReturnType<typeof drizzle>,
+  db: TestContentDb,
   count: number,
   status: "published" | "draft" = "published"
 ): Promise<void> {
@@ -323,8 +309,9 @@ function buildTaxonomiesYaml(): string {
 // ---------------------------------------------------------------------------
 
 describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
-  let rawDb: Database;
-  let seedDb: ReturnType<typeof drizzle>;
+  let rawClient: Client;
+  let seedDb: TestContentDb;
+  let closeDb: () => void;
   let configDir: string;
   let tmpBase: string;
 
@@ -336,9 +323,10 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
   const MAX_BODY_ROWS = PAGE_SIZE * 2;
 
   beforeAll(async () => {
-    rawDb = new Database(":memory:");
-    rawDb.exec(DDL);
-    seedDb = drizzle(rawDb, { schema });
+    const { db, client, cleanup } = await makeTestContentDb(DDL);
+    seedDb = db;
+    rawClient = client;
+    closeDb = cleanup;
 
     tmpBase = await fs.mkdtemp(
       path.join(os.tmpdir(), "tintero-pushdown-")
@@ -384,7 +372,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
   });
 
   afterAll(async () => {
-    rawDb.close();
+    closeDb();
     await fs.rm(tmpBase, { recursive: true, force: true });
   });
 
@@ -396,7 +384,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
     // The row-limit db throws if any body_markdown query returns more than
     // MAX_BODY_ROWS rows. The OLD fetch-all code returns 200+ rows and fails;
     // the SQL-pushdown code returns exactly pageSize rows and passes.
-    const limitDb = createRowLimitDb(rawDb, MAX_BODY_ROWS);
+    const limitDb = createRowLimitDb(rawClient, MAX_BODY_ROWS);
     const adapter = new DrizzleContentAdapter(limitDb, configDir, schema);
 
     const result = await adapter.listPosts({
@@ -421,7 +409,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
   // -------------------------------------------------------------------------
 
   test("listPosts page=2: no overlap with page=1, both served without corpus scan", async () => {
-    const limitDb = createRowLimitDb(rawDb, MAX_BODY_ROWS);
+    const limitDb = createRowLimitDb(rawClient, MAX_BODY_ROWS);
     const adapter = new DrizzleContentAdapter(limitDb, configDir, schema);
 
     const page1 = await adapter.listPosts({
@@ -450,7 +438,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
   test("listPosts tag filter: SQL COUNT reflects only tag-matching posts", async () => {
     // Seed seeded 5 posts with tag "rare-tag" above. The full corpus has many
     // more. The SQL EXISTS join must restrict the count to 5.
-    const limitDb = createRowLimitDb(rawDb, MAX_BODY_ROWS);
+    const limitDb = createRowLimitDb(rawClient, MAX_BODY_ROWS);
     const adapter = new DrizzleContentAdapter(limitDb, configDir, schema);
 
     const result = await adapter.listPosts({
@@ -476,7 +464,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
   test("listPosts category filter: SQL prefix match includes root and child slugs", async () => {
     // 5 posts under "special-cat" + 3 posts under "special-cat/sub" = 8 total.
     // The SQL filter uses (slug = ? OR slug LIKE ?/%) to capture both.
-    const limitDb = createRowLimitDb(rawDb, MAX_BODY_ROWS);
+    const limitDb = createRowLimitDb(rawClient, MAX_BODY_ROWS);
     const adapter = new DrizzleContentAdapter(limitDb, configDir, schema);
 
     const result = await adapter.listPosts({
@@ -490,7 +478,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
   });
 
   test("listPosts category filter: child-only filter does not include root-only posts", async () => {
-    const limitDb = createRowLimitDb(rawDb, MAX_BODY_ROWS);
+    const limitDb = createRowLimitDb(rawClient, MAX_BODY_ROWS);
     const adapter = new DrizzleContentAdapter(limitDb, configDir, schema);
 
     const result = await adapter.listPosts({
@@ -518,11 +506,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
     // 10 posts seeded with authorLabel="TargetAuthor".
     // Use a plain drizzle db (no row-limit wrapper) because the author TS-filter
     // path intentionally loads all structurally-matching rows before filtering.
-    const adapter = new DrizzleContentAdapter(
-      drizzle(rawDb, { schema }),
-      configDir,
-      schema
-    );
+    const adapter = new DrizzleContentAdapter(seedDb, configDir, schema);
 
     const result = await adapter.listPosts({
       author: "TargetAuthor",
@@ -542,7 +526,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
   // -------------------------------------------------------------------------
 
   test("listPages page=1 with 200+ pages: body_markdown query returns ≤ pageSize rows (SQL LIMIT applied)", async () => {
-    const limitDb = createRowLimitDb(rawDb, MAX_BODY_ROWS);
+    const limitDb = createRowLimitDb(rawClient, MAX_BODY_ROWS);
     const adapter = new DrizzleContentAdapter(limitDb, configDir, schema);
 
     const result = await adapter.listPages({
@@ -564,7 +548,7 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
     // All 200+ posts have published_at < SEED_BASE_EPOCH (2024-01-01).
     // With now="2025-01-01" (after all seed dates), all published posts qualify.
     // With now="1970-01-01" (before all seed dates), zero published posts qualify.
-    const limitDb = createRowLimitDb(rawDb, MAX_BODY_ROWS);
+    const limitDb = createRowLimitDb(rawClient, MAX_BODY_ROWS);
     const adapter = new DrizzleContentAdapter(limitDb, configDir, schema);
 
     const resultNone = await adapter.listPosts({
@@ -592,8 +576,9 @@ describe("DrizzleContentAdapter — SQL pushdown proofs", () => {
 // ---------------------------------------------------------------------------
 
 describe("DrizzleContentAdapter — pushdown branch coverage", () => {
-  let rawDb: Database;
-  let seedDb: ReturnType<typeof drizzle>;
+  let rawClient: Client;
+  let seedDb: TestContentDb;
+  let closeDb: () => void;
   let configDir: string;
   let tmpBase: string;
 
@@ -602,9 +587,10 @@ describe("DrizzleContentAdapter — pushdown branch coverage", () => {
   const AUTHOR_POST_COUNT = 6;
 
   beforeAll(async () => {
-    rawDb = new Database(":memory:");
-    rawDb.exec(DDL);
-    seedDb = drizzle(rawDb, { schema });
+    const { db, client, cleanup } = await makeTestContentDb(DDL);
+    seedDb = db;
+    rawClient = client;
+    closeDb = cleanup;
 
     tmpBase = await fs.mkdtemp(
       path.join(os.tmpdir(), "tintero-branch-coverage-")
@@ -629,7 +615,7 @@ describe("DrizzleContentAdapter — pushdown branch coverage", () => {
   });
 
   afterAll(async () => {
-    rawDb.close();
+    closeDb();
     await fs.rm(tmpBase, { recursive: true, force: true });
   });
 
@@ -644,11 +630,7 @@ describe("DrizzleContentAdapter — pushdown branch coverage", () => {
   // -------------------------------------------------------------------------
 
   test("2a: author filter with page=2 pageSize=2: total reflects full author match, posts is page slice", async () => {
-    const adapter = new DrizzleContentAdapter(
-      drizzle(rawDb, { schema }),
-      configDir,
-      schema
-    );
+    const adapter = new DrizzleContentAdapter(seedDb, configDir, schema);
 
     const result = await adapter.listPosts({
       author: AUTHOR_NAME,
@@ -682,11 +664,7 @@ describe("DrizzleContentAdapter — pushdown branch coverage", () => {
   // -------------------------------------------------------------------------
 
   test("2b: adminStatus 'published' with now='' returns zero posts and does not throw", async () => {
-    const adapter = new DrizzleContentAdapter(
-      drizzle(rawDb, { schema }),
-      configDir,
-      schema
-    );
+    const adapter = new DrizzleContentAdapter(seedDb, configDir, schema);
 
     const result = await adapter.listPosts({
       adminStatus: "published",
@@ -724,8 +702,9 @@ describe("DrizzleContentAdapter — pushdown branch coverage", () => {
 // the author filter is moved to TS (FIX 2).
 
 describe("DrizzleContentAdapter — author filter parity", () => {
-  let rawDb: Database;
-  let seedDb: ReturnType<typeof drizzle>;
+  let rawClient: Client;
+  let seedDb: TestContentDb;
+  let closeDb: () => void;
   let configDir: string;
   let tmpBase: string;
 
@@ -733,9 +712,10 @@ describe("DrizzleContentAdapter — author filter parity", () => {
   const SITE_AUTHOR = "Test Author";
 
   beforeAll(async () => {
-    rawDb = new Database(":memory:");
-    rawDb.exec(DDL);
-    seedDb = drizzle(rawDb, { schema });
+    const { db, client, cleanup } = await makeTestContentDb(DDL);
+    seedDb = db;
+    rawClient = client;
+    closeDb = cleanup;
 
     tmpBase = await fs.mkdtemp(
       path.join(os.tmpdir(), "tintero-author-parity-")
@@ -827,7 +807,7 @@ describe("DrizzleContentAdapter — author filter parity", () => {
   });
 
   afterAll(async () => {
-    rawDb.close();
+    closeDb();
     await fs.rm(tmpBase, { recursive: true, force: true });
   });
 
@@ -840,11 +820,7 @@ describe("DrizzleContentAdapter — author filter parity", () => {
     //
     // With TS author filter (FIX 2) the slugify comparison is applied and the
     // post is found.
-    const adapter = new DrizzleContentAdapter(
-      drizzle(rawDb, { schema }),
-      configDir,
-      schema
-    );
+    const adapter = new DrizzleContentAdapter(seedDb, configDir, schema);
 
     const result = await adapter.listPosts({
       author: "alice-smith",
@@ -866,11 +842,7 @@ describe("DrizzleContentAdapter — author filter parity", () => {
     //            → NULL comparison → FALSE (never matches NULL) → false negative
     //
     // With TS author filter (FIX 2) the projected author includes the fallback.
-    const adapter = new DrizzleContentAdapter(
-      drizzle(rawDb, { schema }),
-      configDir,
-      schema
-    );
+    const adapter = new DrizzleContentAdapter(seedDb, configDir, schema);
 
     const result = await adapter.listPosts({
       author: SITE_AUTHOR,

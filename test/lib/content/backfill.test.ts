@@ -1,5 +1,5 @@
 /**
- * Backfill test suite — validates runBackfill against both SQLite (bun:sqlite) and
+ * Backfill test suite — validates runBackfill against both SQLite (libSQL) and
  * PostgreSQL (PGlite) in-memory databases.
  *
  * TDD: tests were written BEFORE backfill.ts existed (RED), then the implementation
@@ -13,8 +13,6 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { Database } from "bun:sqlite";
-import { drizzle as drizzleSqlite } from "drizzle-orm/bun-sqlite";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle as drizzlePg } from "drizzle-orm/pglite";
 import * as sqliteSchema from "@/lib/content/schema.sqlite";
@@ -22,6 +20,7 @@ import * as pgSchema from "@/lib/content/schema.pg";
 import { FilesystemContentAdapter } from "@/lib/content/fs-adapter";
 import { runBackfill, type BackfillSource } from "@/lib/content/backfill";
 import { eq, and } from "drizzle-orm";
+import { makeTestContentDb } from "./make-test-content-db";
 
 // ---------------------------------------------------------------------------
 // DDL — SQLite in-memory (matches schema.sqlite.ts + new unique index on content_meta)
@@ -369,7 +368,7 @@ type AnySchema = any;
 
 function runBackfillTestSuite(
   dialectName: string,
-  makeDb: () => Promise<{ db: AnyDrizzleDb; schema: AnySchema }>
+  makeDb: () => Promise<{ db: AnyDrizzleDb; schema: AnySchema; cleanup: () => void }>
 ) {
   describe(`runBackfill (${dialectName})`, () => {
     let tmpBase: string;
@@ -377,6 +376,7 @@ function runBackfillTestSuite(
     let source: FilesystemContentAdapter;
     let db: AnyDrizzleDb;
     let schema: AnySchema;
+    let closeDb: () => void;
 
     beforeEach(async () => {
       tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), "tintero-backfill-"));
@@ -387,9 +387,11 @@ function runBackfillTestSuite(
       const result = await makeDb();
       db = result.db;
       schema = result.schema;
+      closeDb = result.cleanup;
     });
 
     afterEach(async () => {
+      closeDb();
       await fs.rm(tmpBase, { recursive: true, force: true });
     });
 
@@ -812,16 +814,14 @@ About page content.
 // Register test suites for both dialects
 // ---------------------------------------------------------------------------
 
-runBackfillTestSuite("bun:sqlite", async () => {
-  const sqliteDb = new Database(":memory:");
-  sqliteDb.exec(DDL_SQLITE);
-  const db = drizzleSqlite(sqliteDb, { schema: sqliteSchema });
-  return { db, schema: sqliteSchema };
+runBackfillTestSuite("libsql", async () => {
+  const { db, cleanup } = await makeTestContentDb(DDL_SQLITE);
+  return { db, schema: sqliteSchema, cleanup };
 });
 
 runBackfillTestSuite("pglite", async () => {
   const pg = new PGlite();
   await pg.exec(DDL_PG);
   const db = drizzlePg(pg, { schema: pgSchema });
-  return { db, schema: pgSchema };
+  return { db, schema: pgSchema, cleanup: () => {} };
 });

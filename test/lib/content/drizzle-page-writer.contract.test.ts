@@ -1,7 +1,7 @@
 /**
  * DrizzlePageWriter wired into the shared PageWriter contract suite.
  *
- * Uses an in-memory bun:sqlite database with the same DDL as
+ * Uses an isolated libSQL database with the same DDL as
  * drizzle-content-repository.contract.test.ts. The DrizzleContentAdapter
  * (reader) is wired to the same DB so writes are immediately visible through
  * the read path.
@@ -17,12 +17,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
 import * as schema from "@/lib/content/schema.sqlite";
 import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
 import { DrizzlePageWriter } from "@/lib/content/drizzle-page-writer";
 import { runPageWriterContract, type PageWriterHarness } from "./page-writer-contract";
+import { makeTestContentDb } from "./make-test-content-db";
 
 // ============================================================
 // DDL — identical to drizzle-content-repository.contract.test.ts
@@ -139,9 +138,7 @@ function buildSiteYaml(): string {
 // ============================================================
 
 async function makeDrizzlePageWriterHarness(): Promise<PageWriterHarness> {
-  const sqliteDb = new Database(":memory:");
-  sqliteDb.exec(DDL);
-  const db = drizzle(sqliteDb, { schema });
+  const { db, cleanup: closeDb } = await makeTestContentDb(DDL);
 
   const tmpBase = await fs.mkdtemp(
     path.join(os.tmpdir(), "tintero-drizzle-page-writer-contract-")
@@ -164,7 +161,7 @@ async function makeDrizzlePageWriterHarness(): Promise<PageWriterHarness> {
     writer,
     reader,
     async cleanup(): Promise<void> {
-      sqliteDb.close();
+      closeDb();
       await fs.rm(tmpBase, { recursive: true, force: true });
     },
   };

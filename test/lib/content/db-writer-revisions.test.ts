@@ -23,8 +23,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import * as path from "node:path";
 import * as fsNode from "node:fs/promises";
 import * as os from "node:os";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
+import { makeTestContentDb, type TestContentDb } from "./make-test-content-db";
 
 import * as schema from "@/lib/content/schema.sqlite";
 import { DrizzleContentWriter } from "@/lib/content/drizzle-content-writer";
@@ -166,14 +165,12 @@ const THROWING_REPO: RevisionRepository = {
 };
 
 // ---------------------------------------------------------------------------
-// SQLite helpers
+// libSQL helpers
 // ---------------------------------------------------------------------------
 
-function makeDb(): { raw: Database; db: ReturnType<typeof drizzle> } {
-  const raw = new Database(":memory:");
-  raw.exec(DDL);
-  const db = drizzle(raw, { schema });
-  return { raw, db };
+async function makeDb(): Promise<{ db: TestContentDb; closeDb: () => void }> {
+  const { db, cleanup: closeDb } = await makeTestContentDb(DDL);
+  return { db, closeDb };
 }
 
 // ---------------------------------------------------------------------------
@@ -384,17 +381,17 @@ describe("serializePageMarkdown — shared markdown serializer for pages", () =>
 // ---------------------------------------------------------------------------
 
 describe("DrizzleContentWriter — revision capture", () => {
-  let raw: Database;
-  let db: ReturnType<typeof drizzle>;
+  let db: TestContentDb;
+  let closeDb: () => void;
   let revMock: ReturnType<typeof makeRevisionRepo>;
 
-  beforeEach(() => {
-    ({ raw, db } = makeDb());
+  beforeEach(async () => {
+    ({ db, closeDb } = await makeDb());
     revMock = makeRevisionRepo();
   });
 
   afterEach(() => {
-    raw.close();
+    closeDb();
   });
 
   // -----------------------------------------------------------------------
@@ -564,17 +561,17 @@ describe("DrizzleContentWriter — revision capture", () => {
 // ---------------------------------------------------------------------------
 
 describe("DrizzlePageWriter — revision capture", () => {
-  let raw: Database;
-  let db: ReturnType<typeof drizzle>;
+  let db: TestContentDb;
+  let closeDb: () => void;
   let revMock: ReturnType<typeof makeRevisionRepo>;
 
-  beforeEach(() => {
-    ({ raw, db } = makeDb());
+  beforeEach(async () => {
+    ({ db, closeDb } = await makeDb());
     revMock = makeRevisionRepo();
   });
 
   afterEach(() => {
-    raw.close();
+    closeDb();
   });
 
   test("createPage — record() called once with contentType 'page'", async () => {
@@ -652,17 +649,17 @@ describe("DrizzlePageWriter — revision capture", () => {
 // ---------------------------------------------------------------------------
 
 describe("DrizzleContentWriter — setPostStatus revision capture", () => {
-  let raw: Database;
-  let db: ReturnType<typeof drizzle>;
+  let db: TestContentDb;
+  let closeDb: () => void;
   let revMock: ReturnType<typeof makeRevisionRepo>;
 
-  beforeEach(() => {
-    ({ raw, db } = makeDb());
+  beforeEach(async () => {
+    ({ db, closeDb } = await makeDb());
     revMock = makeRevisionRepo();
   });
 
   afterEach(() => {
-    raw.close();
+    closeDb();
   });
 
   test("setPostStatus — records exactly one revision with contentType 'post'", async () => {
@@ -724,17 +721,17 @@ describe("DrizzleContentWriter — setPostStatus revision capture", () => {
 // ---------------------------------------------------------------------------
 
 describe("DrizzlePageWriter — setPageStatus revision capture", () => {
-  let raw: Database;
-  let db: ReturnType<typeof drizzle>;
+  let db: TestContentDb;
+  let closeDb: () => void;
   let revMock: ReturnType<typeof makeRevisionRepo>;
 
-  beforeEach(() => {
-    ({ raw, db } = makeDb());
+  beforeEach(async () => {
+    ({ db, closeDb } = await makeDb());
     revMock = makeRevisionRepo();
   });
 
   afterEach(() => {
-    raw.close();
+    closeDb();
   });
 
   test("setPageStatus — records exactly one revision with contentType 'page'", async () => {
@@ -810,16 +807,16 @@ describe("DrizzlePageWriter — setPageStatus revision capture", () => {
 
 describe("Cross-writer rawContent parity — DB writers match FS writers", () => {
   let tmpDir: string;
-  let raw: Database;
-  let db: ReturnType<typeof drizzle>;
+  let db: TestContentDb;
+  let closeDb: () => void;
 
   beforeEach(async () => {
     tmpDir = await fsNode.mkdtemp(path.join(os.tmpdir(), "tintero-parity-"));
-    ({ raw, db } = makeDb());
+    ({ db, closeDb } = await makeDb());
   });
 
   afterEach(async () => {
-    raw.close();
+    closeDb();
     await fsNode.rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -1063,15 +1060,15 @@ describe("Cross-writer rawContent parity — DB writers match FS writers", () =>
 // ---------------------------------------------------------------------------
 
 describe("Term order determinism — readRaw (DrizzleContentWriter)", () => {
-  let raw: Database;
-  let db: ReturnType<typeof drizzle>;
+  let db: TestContentDb;
+  let closeDb: () => void;
 
-  beforeEach(() => {
-    ({ raw, db } = makeDb());
+  beforeEach(async () => {
+    ({ db, closeDb } = await makeDb());
   });
 
   afterEach(() => {
-    raw.close();
+    closeDb();
   });
 
   test("readRaw — tags come back in stable alphabetical order regardless of insertion order", async () => {
@@ -1120,12 +1117,12 @@ describe("Term order determinism — readRaw (DrizzleContentWriter)", () => {
 });
 
 describe("Term order determinism — getPost (DrizzleContentAdapter)", () => {
-  let raw: Database;
-  let db: ReturnType<typeof drizzle>;
+  let db: TestContentDb;
+  let closeDb: () => void;
   let configRoot: string;
 
   beforeEach(async () => {
-    ({ raw, db } = makeDb());
+    ({ db, closeDb } = await makeDb());
     // Create a minimal config directory so DrizzleContentAdapter.getSiteConfig
     // and loadTaxonomyRegistry succeed without a real content/ tree.
     configRoot = await fsNode.mkdtemp(path.join(os.tmpdir(), "tintero-cfg-"));
@@ -1140,7 +1137,7 @@ describe("Term order determinism — getPost (DrizzleContentAdapter)", () => {
   });
 
   afterEach(async () => {
-    raw.close();
+    closeDb();
     await fsNode.rm(configRoot, { recursive: true, force: true });
   });
 

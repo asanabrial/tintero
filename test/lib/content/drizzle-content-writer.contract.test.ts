@@ -1,7 +1,7 @@
 /**
  * DrizzleContentWriter wired into the shared ContentWriter contract suite.
  *
- * Uses an in-memory bun:sqlite database with the DDL from drizzle-content-repository.contract.test.ts.
+ * Uses an isolated libSQL database (via makeTestContentDb) with the DDL from drizzle-content-repository.contract.test.ts.
  * The DrizzleContentAdapter (reader) is wired to the same DB so writes are
  * immediately visible through the read path.
  *
@@ -16,13 +16,12 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
 import { and, eq } from "drizzle-orm";
 import * as schema from "@/lib/content/schema.sqlite";
 import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
 import { DrizzleContentWriter } from "@/lib/content/drizzle-content-writer";
 import { runContentWriterContract, type WriterHarness } from "./content-writer-contract";
+import { makeTestContentDb, type TestContentDb } from "./make-test-content-db";
 
 // ============================================================
 // DDL — identical to drizzle-content-repository.contract.test.ts
@@ -139,9 +138,7 @@ function buildSiteYaml(): string {
 // ============================================================
 
 async function makeDrizzleWriterHarness(): Promise<WriterHarness> {
-  const sqliteDb = new Database(":memory:");
-  sqliteDb.exec(DDL);
-  const db = drizzle(sqliteDb, { schema });
+  const { db, cleanup: closeDb } = await makeTestContentDb(DDL);
 
   const tmpBase = await fs.mkdtemp(
     path.join(os.tmpdir(), "tintero-drizzle-writer-contract-")
@@ -164,7 +161,7 @@ async function makeDrizzleWriterHarness(): Promise<WriterHarness> {
     writer,
     reader,
     async cleanup(): Promise<void> {
-      sqliteDb.close();
+      closeDb();
       await fs.rm(tmpBase, { recursive: true, force: true });
     },
   };
@@ -187,7 +184,7 @@ runContentWriterContract("DrizzleContentWriter", makeDrizzleWriterHarness);
 
 /** Read terms.count for the term matching (taxonomy, label). Returns null when absent. */
 async function getTermCount(
-  db: ReturnType<typeof drizzle>,
+  db: TestContentDb,
   taxonomy: string,
   label: string
 ): Promise<number | null> {
@@ -201,20 +198,17 @@ async function getTermCount(
 }
 
 describe("DrizzleContentWriter — terms.count: trash/restore lifecycle (DB-specific)", () => {
-  let sqliteDb: InstanceType<typeof Database>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let db: ReturnType<typeof drizzle<any>>;
+  let db: TestContentDb;
+  let closeDb: () => void;
   let writer: DrizzleContentWriter;
 
-  beforeEach(() => {
-    sqliteDb = new Database(":memory:");
-    sqliteDb.exec(DDL);
-    db = drizzle(sqliteDb, { schema });
+  beforeEach(async () => {
+    ({ db, cleanup: closeDb } = await makeTestContentDb(DDL));
     writer = new DrizzleContentWriter(db, schema);
   });
 
   afterEach(() => {
-    sqliteDb.close();
+    closeDb();
   });
 
   test("trashPost drops terms live count; restorePost restores it", async () => {
@@ -250,20 +244,17 @@ describe("DrizzleContentWriter — terms.count: trash/restore lifecycle (DB-spec
 });
 
 describe("DrizzleContentWriter — terms.count reconciliation (DB-specific)", () => {
-  let sqliteDb: InstanceType<typeof Database>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let db: ReturnType<typeof drizzle<any>>;
+  let db: TestContentDb;
+  let closeDb: () => void;
   let writer: DrizzleContentWriter;
 
-  beforeEach(() => {
-    sqliteDb = new Database(":memory:");
-    sqliteDb.exec(DDL);
-    db = drizzle(sqliteDb, { schema });
+  beforeEach(async () => {
+    ({ db, cleanup: closeDb } = await makeTestContentDb(DDL));
     writer = new DrizzleContentWriter(db, schema);
   });
 
   afterEach(() => {
-    sqliteDb.close();
+    closeDb();
   });
 
   test("terms.count is correctly reconciled across create / delete / update", async () => {
