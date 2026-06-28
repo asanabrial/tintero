@@ -37,21 +37,21 @@ let _adapter: ContentRepository | null = null;
  *                logged to console.warn with the prefix "[content:shadow]". Requires the
  *                same DATABASE_DIALECT + DATABASE_URL/FILE as the "db" branch.
  *
- * The DB adapter and its transitive dependencies (db-factory.ts → bun:sqlite) are loaded
+ * The DB adapter and its transitive dependencies (db-factory.ts → the native DB driver) are loaded
  * lazily via require() only when CONTENT_STORE="db" or CONTENT_STORE="shadow" is set,
- * keeping bun:sqlite out of the default module graph for the Next.js/Turbopack build.
+ * keeping the native DB driver out of the default module graph for the Next.js/Turbopack build.
  */
 export function getAdapter(): ContentRepository {
   if (!_adapter) {
     if (process.env.CONTENT_STORE === "db") {
-      // Lazy-load to keep bun:sqlite out of the default fs bundle.
+      // Lazy-load to keep the native DB driver out of the default fs bundle.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { DrizzleContentAdapter } = require("./drizzle-adapter") as typeof import("./drizzle-adapter");
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
       _adapter = new DrizzleContentAdapter(getContentDb(), CONFIG_ROOT, getContentSchema());
     } else if (process.env.CONTENT_STORE === "shadow") {
-      // Lazy-load DB pieces to keep bun:sqlite out of the default fs bundle.
+      // Lazy-load DB pieces to keep the native DB driver out of the default fs bundle.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { DrizzleContentAdapter } = require("./drizzle-adapter") as typeof import("./drizzle-adapter");
       // eslint-disable-next-line @typescript-eslint/no-require-imports
