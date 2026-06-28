@@ -23,10 +23,13 @@
  *   string to the file regardless of whether the parent page exists. The DB
  *   cannot safely store a dangling UUID FK, so we normalize to null.
  *
- * Atomicity decision:
- *   Sequential writes (no transaction), consistent with DrizzleContentWriter
- *   and backfill.ts. A mid-write failure can leave the DB partially written.
- *   Acceptable for a low-frequency blog writer.
+ * Atomicity:
+ *   Each mutating method wraps its full write sequence in a single transaction via
+ *   `withTransaction` (see ./db-transaction), using libSQL's async transaction API.
+ *   A mid-write failure (e.g. the SEO content_meta insert after the page row insert)
+ *   rolls back the WHOLE operation — no orphan content / meta rows. Read-only
+ *   pre-work (validation, slug/parent resolution) stays OUTSIDE the transaction;
+ *   best-effort revision capture runs AFTER it commits.
  *
  * readRawPage shape:
  *   Returns { frontmatter, rawData, body } where both frontmatter and rawData
@@ -60,6 +63,7 @@ import type { PostSeo } from "./types";
 import type { RevisionContext } from "../revisions/types";
 import type { RevisionRepository } from "../revisions/ports";
 import { getRevisionRepository } from "../revisions/factory";
+import { withTransaction, type Executor } from "./db-transaction";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DrizzleDb = any;
@@ -175,6 +179,7 @@ export class DrizzlePageWriter implements PageWriter {
    * Mirrors DrizzleContentWriter.insertSeoMeta exactly.
    */
   private async insertSeoMeta(
+    exec: Executor,
     contentId: string,
     seo: PostSeo | undefined
   ): Promise<void> {
@@ -185,7 +190,7 @@ export class DrizzlePageWriter implements PageWriter {
       const value = cleaned[field];
       if (value === undefined) continue;
       const id = newId();
-      await this.db
+      await exec
         .insert(this.schema.content_meta)
         .values({
           id,
@@ -209,11 +214,12 @@ export class DrizzlePageWriter implements PageWriter {
    * Mirrors DrizzleContentWriter.updateSeoMeta exactly.
    */
   private async updateSeoMeta(
+    exec: Executor,
     contentId: string,
     seo: PostSeo | undefined
   ): Promise<void> {
     // Step 1: delete all existing seo rows for this content
-    await this.db
+    await exec
       .delete(this.schema.content_meta)
       .where(
         and(
@@ -230,7 +236,7 @@ export class DrizzlePageWriter implements PageWriter {
       const value = cleaned[field];
       if (value === undefined) continue;
       const id = newId();
-      await this.db.insert(this.schema.content_meta).values({
+      await exec.insert(this.schema.content_meta).values({
         id,
         content_id: contentId,
         meta_key: seoMetaKey(field),
@@ -294,35 +300,37 @@ export class DrizzlePageWriter implements PageWriter {
     const now = nowEpoch();
     const contentId = newId();
 
-    // Insert content row (sequential write — see atomicity note in module header)
+    // Atomic write sequence: content row + SEO meta roll back together on failure.
     // Post-only columns are set to their neutral values:
     //   visibility="public", sticky=0, comments_enabled=0,
     //   author_label=null, author_id=null, cover_image=null, password=null
-    await this.db.insert(this.schema.content).values({
-      id: contentId,
-      type: "page",
-      slug: finalSlug,
-      title: parseResult.data.title,
-      status: parseResult.data.status,
-      visibility: "public",
-      password: null,
-      body_markdown: input.body,
-      excerpt: parseResult.data.excerpt ?? null,
-      cover_image: null,
-      author_label: null,
-      author_id: null,
-      sticky: 0,
-      comments_enabled: 0,
-      parent_id: parentId,
-      menu_order: parseResult.data.menu_order,
-      published_at: toEpoch(parseResult.data.date),
-      created_at: now,
-      updated_at: now,
-      deleted_at: null,
-    });
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx.insert(this.schema.content).values({
+        id: contentId,
+        type: "page",
+        slug: finalSlug,
+        title: parseResult.data.title,
+        status: parseResult.data.status,
+        visibility: "public",
+        password: null,
+        body_markdown: input.body,
+        excerpt: parseResult.data.excerpt ?? null,
+        cover_image: null,
+        author_label: null,
+        author_id: null,
+        sticky: 0,
+        comments_enabled: 0,
+        parent_id: parentId,
+        menu_order: parseResult.data.menu_order,
+        published_at: toEpoch(parseResult.data.date),
+        created_at: now,
+        updated_at: now,
+        deleted_at: null,
+      });
 
-    // Write SEO content_meta rows
-    await this.insertSeoMeta(contentId, parseResult.data.seo);
+      // Write SEO content_meta rows
+      await this.insertSeoMeta(tx, contentId, parseResult.data.seo);
+    });
 
     // Build the full serialized markdown for revision capture — mirrors FsPageWriter.createPage.
     // Slug is pinned in frontmatter only when it differs from the title-derived slug.
@@ -437,24 +445,27 @@ export class DrizzlePageWriter implements PageWriter {
 
     const now = nowEpoch();
 
-    // UPDATE content row by ID — preserve created_at (via no-update), update updated_at
-    await this.db
-      .update(this.schema.content)
-      .set({
-        slug: newSlug,
-        title: parseResult.data.title,
-        status: parseResult.data.status,
-        body_markdown: input.body,
-        excerpt: parseResult.data.excerpt ?? null,
-        parent_id: parentId,
-        menu_order: parseResult.data.menu_order,
-        published_at: toEpoch(parseResult.data.date),
-        updated_at: now,
-      })
-      .where(eq(this.schema.content.id, contentId));
+    // Atomic write sequence: content UPDATE + SEO meta replacement roll back together.
+    await withTransaction(this.db, async (tx: Executor) => {
+      // UPDATE content row by ID — preserve created_at (via no-update), update updated_at
+      await tx
+        .update(this.schema.content)
+        .set({
+          slug: newSlug,
+          title: parseResult.data.title,
+          status: parseResult.data.status,
+          body_markdown: input.body,
+          excerpt: parseResult.data.excerpt ?? null,
+          parent_id: parentId,
+          menu_order: parseResult.data.menu_order,
+          published_at: toEpoch(parseResult.data.date),
+          updated_at: now,
+        })
+        .where(eq(this.schema.content.id, contentId));
 
-    // Replace SEO meta (delete old set, insert new set)
-    await this.updateSeoMeta(contentId, parseResult.data.seo);
+      // Replace SEO meta (delete old set, insert new set)
+      await this.updateSeoMeta(tx, contentId, parseResult.data.seo);
+    });
 
     // Build the full serialized markdown for revision capture — mirrors FsPageWriter.updatePage.
     // Slug is pinned only when it differs from the title-derived inferred slug.
@@ -500,16 +511,19 @@ export class DrizzlePageWriter implements PageWriter {
 
     const contentId = rows[0].id;
 
-    // Cascade: delete content_meta before the content row.
-    // Pages never have term_relationships, but defensively delete any anyway.
-    await this.db
-      .delete(this.schema.content_meta)
-      .where(eq(this.schema.content_meta.content_id, contentId));
+    // Atomic cascade: content_meta + content roll back together on failure.
+    await withTransaction(this.db, async (tx: Executor) => {
+      // Cascade: delete content_meta before the content row.
+      // Pages never have term_relationships, but defensively delete any anyway.
+      await tx
+        .delete(this.schema.content_meta)
+        .where(eq(this.schema.content_meta.content_id, contentId));
 
-    // Hard-delete the content row
-    await this.db
-      .delete(this.schema.content)
-      .where(eq(this.schema.content.id, contentId));
+      // Hard-delete the content row
+      await tx
+        .delete(this.schema.content)
+        .where(eq(this.schema.content.id, contentId));
+    });
 
     return { ok: true, slug };
   }
@@ -650,10 +664,13 @@ export class DrizzlePageWriter implements PageWriter {
 
     const r = rows[0];
     const now = nowEpoch();
-    await this.db
-      .update(this.schema.content)
-      .set({ status, updated_at: now })
-      .where(eq(this.schema.content.id, r.id));
+    // Single-statement write, wrapped for a uniform atomic boundary.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx
+        .update(this.schema.content)
+        .set({ status, updated_at: now })
+        .where(eq(this.schema.content.id, r.id));
+    });
 
     // Build serialized markdown for revision capture — mirrors FsPageWriter.setPageStatus
     // which does: mergedData = { ...existing.rawData }; set/delete status; captureRevision.
@@ -735,10 +752,13 @@ export class DrizzlePageWriter implements PageWriter {
     }
 
     const now = nowEpoch();
-    await this.db
-      .update(this.schema.content)
-      .set({ deleted_at: now, updated_at: now })
-      .where(eq(this.schema.content.id, rows[0].id));
+    // Single-statement write, wrapped for a uniform atomic boundary.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx
+        .update(this.schema.content)
+        .set({ deleted_at: now, updated_at: now })
+        .where(eq(this.schema.content.id, rows[0].id));
+    });
 
     return { ok: true, slug };
   }
@@ -819,10 +839,13 @@ export class DrizzlePageWriter implements PageWriter {
     }
 
     const now = nowEpoch();
-    await this.db
-      .update(this.schema.content)
-      .set({ deleted_at: null, updated_at: now })
-      .where(eq(this.schema.content.id, trashedRows[0].id));
+    // Single-statement write, wrapped for a uniform atomic boundary.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx
+        .update(this.schema.content)
+        .set({ deleted_at: null, updated_at: now })
+        .where(eq(this.schema.content.id, trashedRows[0].id));
+    });
 
     return { ok: true, slug };
   }
@@ -854,14 +877,16 @@ export class DrizzlePageWriter implements PageWriter {
 
     const contentId = rows[0].id;
 
-    // Cascade: content_meta → content
-    await this.db
-      .delete(this.schema.content_meta)
-      .where(eq(this.schema.content_meta.content_id, contentId));
+    // Atomic cascade: content_meta → content roll back together on failure.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx
+        .delete(this.schema.content_meta)
+        .where(eq(this.schema.content_meta.content_id, contentId));
 
-    await this.db
-      .delete(this.schema.content)
-      .where(eq(this.schema.content.id, contentId));
+      await tx
+        .delete(this.schema.content)
+        .where(eq(this.schema.content.id, contentId));
+    });
 
     return { ok: true, slug };
   }
