@@ -24,17 +24,27 @@
  *   happens lazily (inside getMysqlTestDb), never at import, so a skipped test
  *   file never mutates the environment or opens a connection.
  *
- * COLLATION
- *   The pushed schema inherits MySQL's case-INsensitive default collation, which
- *   diverges from sqlite/pg. On first connect we apply applyMysqlIdentityCollation
- *   (utf8mb4_bin on identity/FK/key columns) so slug identity is case-sensitive,
- *   matching the other dialects. See src/lib/content/mysql-collation.ts.
+ * COLLATION (CRITICAL ORDERING)
+ *   MySQL/MariaDB default to a case-INsensitive collation, diverging from sqlite/pg.
+ *   The fix is the DATABASE default collation utf8mb4_bin, which every column
+ *   inherits at CREATE time — NOT a per-column ALTER (MariaDB refuses to MODIFY a
+ *   FK column; see src/lib/content/mysql-collation.ts). Because ALTER DATABASE only
+ *   affects NEWLY created tables, the test database MUST be set to utf8mb4_bin and
+ *   the schema pushed AFTERWARDS:
+ *       reset (drop tables) -> ALTER DATABASE ... COLLATE utf8mb4_bin -> drizzle-kit push -> run tests
+ *   The `db:content:push:mysql` script does collation-first push; run it against the
+ *   MYSQL_TEST_URL database before this suite. On first connect we re-apply the
+ *   database default (idempotent) so the contract is self-documenting, but the
+ *   case-sensitivity guarantee comes from pushing the schema after the default is set.
  */
 
 import { drizzle, type MySql2Database } from "drizzle-orm/mysql2";
 import { createPool, type Pool } from "mysql2/promise";
 import * as schema from "@/lib/content/schema.mysql";
-import { applyMysqlIdentityCollation } from "@/lib/content/mysql-collation";
+import {
+  applyMysqlDatabaseCollation,
+  databaseNameFromUrl,
+} from "@/lib/content/mysql-collation";
 
 export { schema as mysqlSchema };
 export type TestMysqlDb = MySql2Database<typeof schema>;
@@ -111,9 +121,11 @@ export function getMysqlTestDb(): Promise<SharedMysql> {
     patchDialect();
     const pool = createPool(MYSQL_TEST_URL);
     const db = drizzle(pool, { schema, mode: "default" });
-    // Pin case-sensitive (utf8mb4_bin) collation on identity columns so slug
-    // identity matches sqlite/pg. Idempotent.
-    await applyMysqlIdentityCollation(db);
+    // Pin the case-sensitive (utf8mb4_bin) DATABASE default so slug identity
+    // matches sqlite/pg. Idempotent. NOTE: this only re-collates tables created
+    // AFTER it runs — the schema must already have been pushed with this default
+    // in place (see the COLLATION note in this file's header).
+    await applyMysqlDatabaseCollation(db, databaseNameFromUrl(MYSQL_TEST_URL));
     registerExitCleanup(pool);
     return { db, pool };
   })();

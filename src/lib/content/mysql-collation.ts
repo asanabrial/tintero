@@ -1,95 +1,71 @@
 /**
- * MySQL/MariaDB identity-column collation hardening.
+ * MySQL/MariaDB content-store collation hardening (DATABASE DEFAULT approach).
  *
  * WHY THIS EXISTS
  * ----------------
  * sqlite (libSQL) and postgres compare TEXT case- AND accent-SENSITIVELY by
  * default, so the content store treats slugs like "Foo" and "foo" as DISTINCT
- * identities. MySQL's server default collation `utf8mb4_0900_ai_ci` is case- and
- * accent-INSENSITIVE: ("post","Foo") and ("post","foo") collapse to the SAME key
- * on the `idx_content_type_slug` unique index, and equality lookups (slug = ?)
- * match the wrong row. That silently breaks parity with the other three dialects.
+ * identities. MySQL's server default collation `utf8mb4_0900_ai_ci` (MariaDB:
+ * `utf8mb4_general_ci`) is case- and accent-INSENSITIVE: ("post","Foo") and
+ * ("post","foo") collapse to the SAME key on the `idx_content_type_slug` unique
+ * index, and equality lookups (slug = ?) match the wrong row. That silently
+ * breaks parity with the other three dialects.
  *
- * WHY IT IS NOT IN schema.mysql.ts
- * --------------------------------
- * drizzle-orm 0.45.2's mysql-core `varchar()` builder has NO per-column collation
- * option (MySqlVarCharConfig exposes only { length, enum }). The generated DDL —
- * whether via `drizzle-kit push` or a migration — therefore inherits the server/
- * table default collation. There is no way to pin a binary collation through the
- * drizzle schema in this version, so the override has to be applied as raw DDL
- * AFTER the table is created.
+ * WHY THE DATABASE DEFAULT — NOT A PER-COLUMN ALTER
+ * -------------------------------------------------
+ * The obvious fix is a post-push `ALTER TABLE ... MODIFY <col> COLLATE utf8mb4_bin`
+ * on every identity/FK/key column. It WORKS on MySQL 8, but it is FUNDAMENTALLY
+ * INCOMPATIBLE with MariaDB: MariaDB refuses to MODIFY a column that is part of a
+ * foreign key with `ER_FK_COLUMN_CANNOT_CHANGE_CHILD`, and — unlike a row-level FK
+ * check — `SET FOREIGN_KEY_CHECKS = 0` does NOT bypass this DDL-time restriction.
+ * The content schema is full of FK columns (parent_id, content_id, term_id, …), so
+ * the per-column rewrite is a dead end on MariaDB.
  *
- * THE FIX
- * -------
- * Pin `utf8mb4_bin` (byte-exact, case- and accent-sensitive) on every identity /
- * FK / indexed-key column so MySQL matches the sqlite/pg semantics exactly:
- *   - content:            id, type, slug, parent_id, author_id, live_slug_key
- *   - terms:              id, taxonomy, slug, parent_id
- *   - term_relationships: content_id, term_id
- *   - content_meta:       id, content_id, meta_key
+ * Instead we set the DATABASE default collation to `utf8mb4_bin` BEFORE the tables
+ * are created. Every column then INHERITS `utf8mb4_bin` at CREATE time — no
+ * per-column ALTER, so the MariaDB FK restriction is never triggered. Verified on
+ * both MySQL 8.4 and MariaDB 11: after
  *
- * Non-indexed free-text columns (title, body_markdown, excerpt, …) are left at the
- * server default on purpose — they are never used as identities or lookup keys, so
- * their collation does not affect correctness.
+ *     ALTER DATABASE `<db>` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin
  *
- * FK COLLATION MATCHING: MySQL requires a foreign-key column and its referenced
- * column to share the same charset+collation. Because every FK and its target is
- * pinned to utf8mb4_bin here, the constraints stay valid. The statements run with
- * FOREIGN_KEY_CHECKS disabled so the transient per-column rewrite never trips the
- * matching rule mid-flight.
+ * followed by `drizzle-kit push`, every column (id, type, slug, title, …) comes out
+ * `utf8mb4_bin`. The `live_slug_key` STORED generated column's `concat()` inherits
+ * `utf8mb4_bin` too, so its UNIQUE index is byte-exact (case-sensitive) — matching
+ * the sqlite/pg `(type, slug)` identity semantics with no extra DDL.
  *
- * The `live_slug_key` generated column must be RE-DECLARED with its full
- * expression to attach the collation (you cannot ALTER ... MODIFY a generated
- * column's collation without restating GENERATED ALWAYS AS (...)).
+ * ORDERING (CRITICAL)
+ * -------------------
+ * `ALTER DATABASE ... COLLATE` only changes the DEFAULT applied to NEWLY created
+ * tables; it does NOT re-collate columns of tables that already exist. So this MUST
+ * run BEFORE the schema is pushed/migrated. Re-collating an ALREADY-populated
+ * database therefore requires dropping and recreating the tables (drop → ALTER
+ * DATABASE → push), not just running this statement.
  *
  * PRODUCTION USAGE
  * ----------------
- * Run AFTER `drizzle-kit push`/migrate for a mysql or mariadb DATABASE_DIALECT:
+ * Run BEFORE `drizzle-kit push`/migrate for a mysql or mariadb DATABASE_DIALECT.
+ * The `db:content:push:mysql` npm script chains collation-first:
  *
  *   import { getContentDb } from "@/lib/content/db-factory";
- *   import { applyMysqlIdentityCollation } from "@/lib/content/mysql-collation";
- *   await applyMysqlIdentityCollation(getContentDb());
+ *   import {
+ *     applyMysqlDatabaseCollation,
+ *     databaseNameFromUrl,
+ *   } from "@/lib/content/mysql-collation";
+ *   await applyMysqlDatabaseCollation(
+ *     getContentDb(),
+ *     databaseNameFromUrl(process.env.DATABASE_URL!)
+ *   );
+ *   // ...then drizzle-kit push.
  *
- * Each statement is idempotent — re-applying the same collation is a no-op rewrite.
+ * Idempotent — re-applying the same database default is a no-op.
  */
 
 import { sql } from "drizzle-orm";
 
-/**
- * Ordered raw DDL statements that pin `utf8mb4_bin` on the content store's
- * identity/FK/indexed columns. Wrapped in FOREIGN_KEY_CHECKS toggles so the
- * per-column rewrites never violate FK collation matching mid-sequence.
- */
-export const MYSQL_IDENTITY_COLLATION_STATEMENTS: readonly string[] = [
-  "SET FOREIGN_KEY_CHECKS = 0",
-  // content — identity, FKs, and the generated live-slug key.
-  "ALTER TABLE content " +
-    "MODIFY id varchar(36) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY type varchar(32) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY slug varchar(255) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY parent_id varchar(36) COLLATE utf8mb4_bin NULL, " +
-    "MODIFY author_id varchar(36) COLLATE utf8mb4_bin NULL",
-  // live_slug_key is generated — restate the expression to attach the collation.
-  "ALTER TABLE content MODIFY live_slug_key varchar(320) COLLATE utf8mb4_bin " +
-    "GENERATED ALWAYS AS (case when `deleted_at` is null " +
-    "then concat(`type`, 0x1f, `slug`) else null end) STORED",
-  // terms — identity + FK + scoped unique key (taxonomy, slug).
-  "ALTER TABLE terms " +
-    "MODIFY id varchar(36) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY taxonomy varchar(32) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY slug varchar(255) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY parent_id varchar(36) COLLATE utf8mb4_bin NULL",
-  // term_relationships — both FKs (composite PK).
-  "ALTER TABLE term_relationships " +
-    "MODIFY content_id varchar(36) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY term_id varchar(36) COLLATE utf8mb4_bin NOT NULL",
-  // content_meta — identity, FK, and the unique meta_key.
-  "ALTER TABLE content_meta " +
-    "MODIFY id varchar(36) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY content_id varchar(36) COLLATE utf8mb4_bin NOT NULL, " +
-    "MODIFY meta_key varchar(191) COLLATE utf8mb4_bin NOT NULL",
-  "SET FOREIGN_KEY_CHECKS = 1",
-];
+/** The byte-exact, case- and accent-sensitive collation the content store pins. */
+export const CONTENT_COLLATION = "utf8mb4_bin";
+/** The charset that collation belongs to. */
+export const CONTENT_CHARSET = "utf8mb4";
 
 /**
  * Minimal structural type for the drizzle mysql executor: just `.execute(sql)`.
@@ -100,13 +76,48 @@ interface MysqlExecutor {
 }
 
 /**
- * Apply the identity-column collation override to a live MySQL/MariaDB content
- * store. Idempotent. Call once after the schema is created/pushed.
+ * Derive the database (schema) name from a MySQL/MariaDB connection URL by
+ * reading its path segment, e.g. `mysql://root:pw@127.0.0.1:3307/tintero` →
+ * `tintero`. Throws when the URL has no database in its path.
  */
-export async function applyMysqlIdentityCollation(
-  db: MysqlExecutor
-): Promise<void> {
-  for (const statement of MYSQL_IDENTITY_COLLATION_STATEMENTS) {
-    await db.execute(sql.raw(statement));
+export function databaseNameFromUrl(databaseUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch {
+    throw new Error(
+      `DATABASE_URL is not a valid URL — cannot derive the database name from "${databaseUrl}"`
+    );
   }
+  const name = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+  if (!name) {
+    throw new Error(
+      `DATABASE_URL has no database name in its path — expected mysql://host:port/<db>, got "${databaseUrl}"`
+    );
+  }
+  return name;
+}
+
+/**
+ * Build the idempotent `ALTER DATABASE ... CHARACTER SET ... COLLATE ...`
+ * statement that pins `utf8mb4_bin` as the database default. Backticks in the
+ * database name are escaped by doubling, matching MySQL identifier quoting.
+ */
+export function mysqlDatabaseCollationStatement(dbName: string): string {
+  const quoted = `\`${dbName.replace(/`/g, "``")}\``;
+  return `ALTER DATABASE ${quoted} CHARACTER SET ${CONTENT_CHARSET} COLLATE ${CONTENT_COLLATION}`;
+}
+
+/**
+ * Pin `utf8mb4_bin` as the DEFAULT collation of the given database so every table
+ * created afterwards inherits case-sensitive identity columns. Idempotent.
+ *
+ * MUST be called BEFORE the content schema is pushed/migrated — it only affects
+ * tables created after it runs (see the module header for the ordering contract).
+ */
+export async function applyMysqlDatabaseCollation(
+  db: MysqlExecutor,
+  dbName: string
+): Promise<void> {
+  await db.execute(sql.raw(mysqlDatabaseCollationStatement(dbName)));
 }

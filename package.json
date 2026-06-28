@@ -14,7 +14,8 @@
     "backfill": "bun run scripts/backfill.ts",
     "db:content:push:pg": "drizzle-kit push --config=drizzle.content.pg.config.ts",
     "db:content:push:sqlite": "drizzle-kit push --config=drizzle.content.sqlite.config.ts",
-    "db:content:push:mysql": "drizzle-kit push --config=drizzle.content.mysql.config.ts && bun run db:content:collation:mysql",
+    "//db:content:push:mysql": "Collation FIRST, then push: ALTER DATABASE only affects NEWLY created tables, so re-collating an existing populated DB requires drop+recreate (drop tables -> this script -> push).",
+    "db:content:push:mysql": "bun run db:content:collation:mysql && drizzle-kit push --config=drizzle.content.mysql.config.ts",
     "db:content:collation:mysql": "bun run scripts/apply-mysql-collation.ts"
   },
   "dependencies": {

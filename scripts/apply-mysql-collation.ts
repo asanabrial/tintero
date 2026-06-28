@@ -1,14 +1,18 @@
 #!/usr/bin/env bun
 /**
- * Post-push collation hardening for the MySQL/MariaDB content store.
+ * Pre-push collation hardening for the MySQL/MariaDB content store.
  *
- * drizzle-orm 0.45.2's mysql-core varchar() builder cannot express per-column
- * collation, so `drizzle-kit push` (db:content:push:mysql) creates the identity
- * columns with MySQL's case-INsensitive default collation. That diverges from the
- * sqlite/pg dialects, which treat slugs case-sensitively. This script pins
- * utf8mb4_bin on the identity/FK/key columns to restore parity.
+ * MySQL/MariaDB default to a case-INsensitive collation, which diverges from the
+ * sqlite/pg dialects that treat slugs case-sensitively. This script pins
+ * utf8mb4_bin as the DATABASE default so that every table `drizzle-kit push`
+ * creates afterwards inherits case-sensitive identity columns — restoring parity
+ * without any per-column ALTER (which MariaDB refuses on FK columns; see
+ * src/lib/content/mysql-collation.ts).
  *
- * Run AFTER the push (the db:content:push:mysql npm script chains it):
+ * ORDERING: this MUST run BEFORE the push. `ALTER DATABASE ... COLLATE` only
+ * changes the default applied to NEWLY created tables; it does not re-collate
+ * tables that already exist. The db:content:push:mysql npm script runs this
+ * first, then pushes:
  *   DATABASE_DIALECT=mysql DATABASE_URL=mysql://… bun run scripts/apply-mysql-collation.ts
  *
  * Requires DATABASE_DIALECT ∈ { mysql, mariadb } and DATABASE_URL set. Idempotent.
@@ -18,7 +22,10 @@
  */
 
 import { getContentDb } from "../src/lib/content/db-factory";
-import { applyMysqlIdentityCollation } from "../src/lib/content/mysql-collation";
+import {
+  applyMysqlDatabaseCollation,
+  databaseNameFromUrl,
+} from "../src/lib/content/mysql-collation";
 
 async function main(): Promise<void> {
   const dialect = (process.env.DATABASE_DIALECT ?? "").toLowerCase();
@@ -27,15 +34,24 @@ async function main(): Promise<void> {
       `DATABASE_DIALECT must be "mysql" or "mariadb" to apply this collation override (got "${process.env.DATABASE_DIALECT ?? ""}")`
     );
   }
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      "DATABASE_URL is not set — point it at the MySQL/MariaDB database to harden"
+    );
+  }
+  const dbName = databaseNameFromUrl(databaseUrl);
   const db = getContentDb();
-  await applyMysqlIdentityCollation(db);
+  await applyMysqlDatabaseCollation(db, dbName);
   // eslint-disable-next-line no-console
-  console.log("Applied utf8mb4_bin collation to content-store identity columns.");
+  console.log(
+    `Set ${dbName} default collation to utf8mb4_bin (run BEFORE drizzle-kit push).`
+  );
   process.exit(0);
 }
 
 main().catch((err) => {
   // eslint-disable-next-line no-console
-  console.error("Failed to apply MySQL identity collation:", err);
+  console.error("Failed to apply MySQL database collation:", err);
   process.exit(1);
 });
