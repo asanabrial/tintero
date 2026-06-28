@@ -42,7 +42,7 @@ export async function createUserAction(
   const session = await verifySession();
 
   if (!can(session.role, "users:manage")) {
-    return { ok: false, error: "You do not have permission to perform this action.", field: "general" };
+    return { ok: false, error: "admin.errors.noPermission", field: "general" };
   }
 
   const email = (formData.get("email") as string | null) ?? "";
@@ -81,7 +81,7 @@ export async function createUserAction(
     if (err instanceof DuplicateEmailError) {
       return {
         ok: false,
-        error: "An account with that email already exists.",
+        error: "admin.errors.userEmailExists",
         field: "email",
       };
     }
@@ -91,7 +91,7 @@ export async function createUserAction(
     console.error("createUserAction: failed to persist user", err);
     return {
       ok: false,
-      error: "Could not create the user right now. Please try again.",
+      error: "admin.errors.userCreateFailed",
       field: "general",
     };
   }
@@ -172,7 +172,7 @@ export async function updatePasswordAction(
   const session = await verifySession();
 
   if (!can(session.role, "users:manage")) {
-    return { ok: false, error: "You do not have permission to perform this action.", field: "general" };
+    return { ok: false, error: "admin.errors.noPermission", field: "general" };
   }
 
   const password = (formData.get("password") as string | null) ?? "";
@@ -198,14 +198,14 @@ export async function updatePasswordAction(
     console.error("updatePasswordAction: failed to update password", err);
     return {
       ok: false,
-      error: "Could not update the password right now. Please try again.",
+      error: "admin.errors.userPasswordUpdateFailed",
       field: "general",
     };
   }
   if (!updated) {
     return {
       ok: false,
-      error: "User not found.",
+      error: "admin.errors.userNotFound",
       field: "general",
     };
   }
@@ -233,12 +233,12 @@ export async function updateUserRoleAction(
 
   // (a) auth gate
   if (!can(session.role, "users:manage")) {
-    return { ok: false, error: "You do not have permission to perform this action.", field: "general" };
+    return { ok: false, error: "admin.errors.noPermission", field: "general" };
   }
 
   // (b) self-role-change block (sync, no DB)
   if (targetId === session.userId) {
-    return { ok: false, error: "You cannot change your own role.", field: "general" };
+    return { ok: false, error: "admin.errors.userCannotChangeOwnRole", field: "general" };
   }
 
   // (c) parse
@@ -258,20 +258,20 @@ export async function updateUserRoleAction(
     // (d) target exists?
     const target = await repo.findById(targetId);
     if (!target) {
-      return { ok: false, error: "User not found.", field: "general" };
+      return { ok: false, error: "admin.errors.userNotFound", field: "general" };
     }
 
     // (e) last-admin invariant
     const adminCount = await repo.countAdmins();
     if (isDemotingLastAdmin(target.role, parsed.data.role, adminCount)) {
-      return { ok: false, error: "Cannot demote the last admin.", field: "general" };
+      return { ok: false, error: "admin.errors.userCannotDemoteLastAdmin", field: "general" };
     }
 
     // (f) persist
     await repo.updateRole(targetId, parsed.data.role);
   } catch (err) {
     console.error("updateUserRoleAction: failed to update role", err);
-    return { ok: false, error: "Could not update the role right now. Please try again.", field: "general" };
+    return { ok: false, error: "admin.errors.userRoleUpdateFailed", field: "general" };
   }
 
   revalidatePath("/admin/users");

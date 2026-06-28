@@ -131,7 +131,7 @@ export function PostForm({
       {currentSlug && <input type="hidden" name="currentSlug" value={currentSlug} />}
 
       {/* Global error banner */}
-      {state?.error && <FormAlert>{state.error}</FormAlert>}
+      {state?.error && <FormAlert>{tr(state.error)}</FormAlert>}
 
       <EditorLayout
         main={

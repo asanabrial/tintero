@@ -92,7 +92,7 @@ export async function createPostAction(
   const author = authorField || authorDisplayName || (authorLabel ? authorLabel.split("@")[0] : undefined);
 
   if (!can(session.role, "posts:create")) {
-    return { error: "You do not have permission to perform this action." };
+    return { error: "admin.errors.noPermission" };
   }
 
   const result = await getWriter().createPost({
@@ -161,14 +161,14 @@ export async function updatePostAction(
 
   const currentSlug = (formData.get("currentSlug") as string | null) ?? "";
   if (!currentSlug) {
-    return { error: "Missing current slug — cannot update." };
+    return { error: "admin.errors.missingSlug" };
   }
 
   // Ownership gate: read authorId from existing post before mutation
   const existing = await getWriter().readRaw(currentSlug);
   const postAuthorId = (existing?.frontmatter.authorId as string | undefined) ?? null;
   if (!canEditPost(session.role, postAuthorId, session.userId)) {
-    return { error: "You can only edit your own posts." };
+    return { error: "admin.errors.postOwnPostsOnly" };
   }
 
   const title = (formData.get("title") as string | null) ?? "";
@@ -396,14 +396,14 @@ export async function createQuickDraftAction(
 
   // RBAC fail-closed — check BEFORE reading any formData
   if (!can(session.role, "posts:create")) {
-    return { error: "You do not have permission to perform this action." };
+    return { error: "admin.errors.noPermission" };
   }
 
   const title = (formData.get("title") as string | null)?.trim() ?? "";
   const body = (formData.get("body") as string | null)?.trim() ?? "";
 
-  if (!title) return { error: "Title is required." };
-  if (!body) return { error: "Body is required." };
+  if (!title) return { error: "admin.errors.postTitleRequired" };
+  if (!body) return { error: "admin.errors.postBodyRequired" };
 
   const result = await getWriter().createPost(
     {

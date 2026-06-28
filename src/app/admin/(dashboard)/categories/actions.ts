@@ -45,23 +45,23 @@ export async function createCategoryAction(
 ): Promise<TaxonomyCreateState> {
   const session = await verifySession();
   if (!can(session.role, "categories:manage")) {
-    return { ok: false, field: "general", error: "You do not have permission to perform this action." };
+    return { ok: false, field: "general", error: "admin.errors.noPermission" };
   }
 
   const label = ((formData.get("label") as string | null) ?? "").trim();
   const description = ((formData.get("description") as string | null) ?? "").trim() || undefined;
 
   if (!label) {
-    return { ok: false, field: "label", error: "Label is required." };
+    return { ok: false, field: "label", error: "admin.errors.labelRequired" };
   }
 
   const result = await getTaxonomyRegistryWriter().addTerm("category", label, description);
 
   if (!result.ok) {
     if (result.error.kind === "duplicate") {
-      return { ok: false, field: "label", error: "A category with this label already exists in the registry." };
+      return { ok: false, field: "label", error: "admin.errors.duplicateLabelCategory" };
     }
-    return { ok: false, field: "general", error: "Failed to create category." };
+    return { ok: false, field: "general", error: "admin.errors.createFailedCategory" };
   }
 
   updateTag("categories");
@@ -84,14 +84,14 @@ export async function renameCategoryAction(
 ): Promise<TaxonomyActionState> {
   const session = await verifySession();
   if (!can(session.role, "categories:manage")) {
-    return { ok: false, error: "You do not have permission to perform this action." };
+    return { ok: false, error: "admin.errors.noPermission" };
   }
 
   const value = (formData.get("value") as string | null) ?? "";
   const newValue = (formData.get("newValue") as string | null) ?? "";
 
   if (!newValue.trim()) {
-    return { ok: false, error: "New name cannot be empty or whitespace only." };
+    return { ok: false, error: "admin.errors.nameEmpty" };
   }
 
   const { posts } = await getRepository().listPosts({
@@ -138,7 +138,7 @@ export async function mergeCategoryAction(
 ): Promise<TaxonomyActionState> {
   const session = await verifySession();
   if (!can(session.role, "categories:manage")) {
-    return { ok: false, error: "You do not have permission to perform this action." };
+    return { ok: false, error: "admin.errors.noPermission" };
   }
 
   const value = (formData.get("value") as string | null) ?? "";
@@ -155,7 +155,7 @@ export async function mergeCategoryAction(
     (c) => c.label.trim().toLowerCase() === target.trim().toLowerCase()
   );
   if (!targetExists) {
-    return { ok: false, error: "Target category not found in the current index." };
+    return { ok: false, error: "admin.errors.targetNotFoundCategory" };
   }
 
   const report = await applyTaxonomyOp(

@@ -42,10 +42,10 @@ export function PasswordForm({ action, email }: PasswordFormProps) {
       </p>
 
       {/* Guard-level error (e.g., user not found) */}
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
 
       {/* New password */}
-      <Field htmlFor="new-password" label={tr("admin.users.newPassword")} required layout="stacked" error={passwordError}>
+      <Field htmlFor="new-password" label={tr("admin.users.newPassword")} required layout="stacked" error={passwordError ? tr(passwordError) : null}>
         <TextInput
           id="new-password"
           type="password"

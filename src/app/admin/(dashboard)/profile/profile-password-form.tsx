@@ -19,9 +19,9 @@ export function ProfilePasswordForm({ action }: ProfilePasswordFormProps) {
 
   return (
     <form action={dispatch} noValidate className="space-y-4">
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
 
-      <Field htmlFor="profile-new-password" label={tr("admin.profile.newPassword")} required layout="stacked" error={passwordError}>
+      <Field htmlFor="profile-new-password" label={tr("admin.profile.newPassword")} required layout="stacked" error={passwordError ? tr(passwordError) : null}>
         <TextInput
           id="profile-new-password"
           type="password"

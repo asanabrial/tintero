@@ -27,7 +27,7 @@ export async function updateOwnPasswordAction(
 
   // Defensive gate: all authenticated roles have profile:own (admin/editor/author all pass).
   if (!can(session.role, "profile:own")) {
-    return { ok: false, error: "You do not have permission to perform this action.", field: "general" };
+    return { ok: false, error: "admin.errors.noPermission", field: "general" };
   }
 
   const password = (formData.get("password") as string | null) ?? "";
@@ -40,7 +40,7 @@ export async function updateOwnPasswordAction(
   const newHash = await hashPassword(parsed.data.password);
   const updated = await getUserRepository().updatePassword(session.userId, newHash);
   if (!updated) {
-    return { ok: false, error: "Account not found.", field: "general" };
+    return { ok: false, error: "admin.errors.profileAccountNotFound", field: "general" };
   }
 
   redirect("/admin/profile?saved=1");
@@ -57,7 +57,7 @@ export async function updateProfileAction(
   const session = await verifySession();
 
   if (!can(session.role, "profile:own")) {
-    return { ok: false, error: "You do not have permission to perform this action.", field: "general" };
+    return { ok: false, error: "admin.errors.noPermission", field: "general" };
   }
 
   const name = ((formData.get("name") as string | null) ?? "").trim() || null;
@@ -66,7 +66,7 @@ export async function updateProfileAction(
   try {
     await getUserRepository().updateProfile(session.userId, { name, bio });
   } catch {
-    return { ok: false, error: "Could not update your profile right now. Please try again.", field: "general" };
+    return { ok: false, error: "admin.errors.profileUpdateFailed", field: "general" };
   }
 
   revalidatePath("/admin/profile");

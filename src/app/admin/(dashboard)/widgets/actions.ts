@@ -19,7 +19,7 @@ export async function updateWidgetsAction(
 ): Promise<WidgetActionState> {
   const session = await verifySession();
   if (!can(session.role, "appearance:manage")) {
-    return { ok: false, error: "You do not have permission to manage widgets." };
+    return { ok: false, error: "admin.errors.noPermission" };
   }
 
   const intent = (
@@ -61,7 +61,7 @@ export async function updateWidgetsAction(
     const idx = parseInt(intent.slice("move-down:".length), 10);
     array = moveWidgetItem(base, idx, "down");
   } else {
-    return { ok: false, error: "Unknown intent" };
+    return { ok: false, error: "admin.errors.unknownIntent" };
   }
 
   // Validate each item

@@ -261,7 +261,7 @@ function ReplyRow({
       />
       {state.status === "error" && (
         <p className="text-xs text-red-600 dark:text-red-400" role="alert">
-          {state.message}
+          {tr(state.message)}
         </p>
       )}
       <div className="flex items-center gap-3">
@@ -320,7 +320,7 @@ function EditRow({
       />
       {state.status === "error" && (
         <p className="text-xs text-red-600 dark:text-red-400" role="alert">
-          {state.message}
+          {tr(state.message)}
         </p>
       )}
       <div className="flex items-center gap-3">

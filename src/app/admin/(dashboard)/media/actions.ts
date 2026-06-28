@@ -50,7 +50,7 @@ export async function uploadMediaAction(
   const session = await verifySession();
 
   if (!can(session.role, "media:upload")) {
-    return { error: "You do not have permission to perform this action." };
+    return { error: "admin.errors.noPermission" };
   }
 
   const file = formData.get("file") as File | null;
@@ -108,7 +108,7 @@ export async function updateMediaMetaAction(
 ): Promise<MediaMetaFormState> {
   const session = await verifySession();
   if (!can(session.role, "media:upload")) {
-    return { error: "You do not have permission to perform this action." };
+    return { error: "admin.errors.noPermission" };
   }
   const alt = (formData.get("alt") as string | null) ?? undefined;
   const caption = (formData.get("caption") as string | null) ?? undefined;

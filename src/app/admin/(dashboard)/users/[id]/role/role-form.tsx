@@ -45,10 +45,10 @@ export function RoleForm({ action, currentRole, email }: RoleFormProps) {
       </p>
 
       {/* Guard-level error (e.g., last-admin demotion, self-change) */}
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
 
       {/* Role select */}
-      <Field htmlFor="user-role" label={tr("admin.users.colRole")} layout="stacked" error={roleError}>
+      <Field htmlFor="user-role" label={tr("admin.users.colRole")} layout="stacked" error={roleError ? tr(roleError) : null}>
         <SelectInput
           id="user-role"
           name="role"

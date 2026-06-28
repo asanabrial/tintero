@@ -117,7 +117,7 @@ export function AppearanceForm({
 
   return (
     <form action={dispatch} noValidate className="space-y-6" id={formId}>
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
       {saved && (
         <FormAlert tone="success">{savedMsg ?? tr("admin.appearance.saved")}</FormAlert>
       )}

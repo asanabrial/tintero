@@ -359,7 +359,7 @@ export function WidgetEditor({ initial, saved, action }: WidgetEditorProps) {
             role="alert"
             className="rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-2"
           >
-            <p className="text-sm text-red-700 dark:text-red-400">{globalError}</p>
+            <p className="text-sm text-red-700 dark:text-red-400">{tr(globalError)}</p>
           </div>
         )}
 
