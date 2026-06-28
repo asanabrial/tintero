@@ -21,8 +21,9 @@
  *   onConflictDoUpdate to upsert SEO rows cleanly without delete-before-insert.
  */
 
-import { eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { newId, toEpoch, nowEpoch, toBool01 } from "./db-values";
+import { upsertReturningId, upsert, insertIgnore } from "./db-upsert";
 import { slugifyTag } from "./tag";
 import { slugifyCategory, joinSlug } from "./category";
 import { SEO_FIELDS, seoMetaKey, seoMetaValue } from "./seo-meta";
@@ -206,9 +207,10 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
     const bodyMarkdown = rawBody?.body ?? "";
     const id = newId();
 
-    const inserted = await db
-      .insert(schema.content)
-      .values({
+    const insertedId = await upsertReturningId(
+      db,
+      schema.content,
+      {
         id,
         type: "post",
         slug: post.slug,
@@ -229,18 +231,18 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
         created_at: now,
         updated_at: now,
         // A live FS file is always untrashed — set deleted_at = null on INSERT.
-        // Intentionally omitted from onConflictDoUpdate: a row trashed in the DB
+        // Intentionally omitted from the update set: a row trashed in the DB
         // must stay trashed across re-backfill (the FS file re-asserting itself
         // should not silently un-trash it).
         deleted_at: null,
-      })
-      .onConflictDoUpdate({
-        target: [schema.content.type, schema.content.slug],
+      },
+      {
+        conflictTarget: [schema.content.type, schema.content.slug],
         // targetWhere scopes the conflict check to the partial unique index
         // (WHERE deleted_at IS NULL). Without this, SQLite/PG cannot resolve
         // the conflict target to the partial index definition.
         targetWhere: isNull(schema.content.deleted_at),
-        set: {
+        updateSet: {
           title: post.title,
           status: post.status,
           visibility: post.visibility ?? "public",
@@ -257,10 +259,18 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
           // deleted_at is NOT updated here — a trashed row must remain trashed
           // even when the source FS file still exists (re-backfill ≠ un-trash).
         },
-      })
-      .returning({ id: schema.content.id });
+        idColumn: schema.content.id,
+        // MySQL has no RETURNING: identify the live row by its natural key,
+        // scoped to non-trashed rows to mirror the partial unique index.
+        naturalKeyWhere: and(
+          eq(schema.content.type, "post"),
+          eq(schema.content.slug, post.slug),
+          isNull(schema.content.deleted_at)
+        ),
+      }
+    );
 
-    postIdBySlug.set(post.slug, inserted[0].id);
+    postIdBySlug.set(post.slug, insertedId);
   }
 
   // 6. Upsert pages into content table — pass 1: parent_id = null
@@ -273,9 +283,10 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
     const bodyMarkdown = rawBody?.body ?? "";
     const id = newId();
 
-    const inserted = await db
-      .insert(schema.content)
-      .values({
+    const insertedId = await upsertReturningId(
+      db,
+      schema.content,
+      {
         id,
         type: "page",
         slug: page.slug,
@@ -296,16 +307,16 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
         created_at: now,
         updated_at: now,
         // A live FS file is always untrashed — set deleted_at = null on INSERT.
-        // Intentionally omitted from onConflictDoUpdate: a row trashed in the DB
+        // Intentionally omitted from the update set: a row trashed in the DB
         // must stay trashed across re-backfill (see posts section above).
         deleted_at: null,
-      })
-      .onConflictDoUpdate({
-        target: [schema.content.type, schema.content.slug],
+      },
+      {
+        conflictTarget: [schema.content.type, schema.content.slug],
         // targetWhere scopes the conflict check to the partial unique index
         // (WHERE deleted_at IS NULL). Same rationale as the post upsert above.
         targetWhere: isNull(schema.content.deleted_at),
-        set: {
+        updateSet: {
           title: page.title,
           status: page.status,
           body_markdown: bodyMarkdown,
@@ -316,10 +327,18 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
           // deleted_at is NOT updated here — a trashed row must remain trashed
           // even when the source FS file still exists (re-backfill ≠ un-trash).
         },
-      })
-      .returning({ id: schema.content.id });
+        idColumn: schema.content.id,
+        // MySQL has no RETURNING: identify the live row by its natural key,
+        // scoped to non-trashed rows to mirror the partial unique index.
+        naturalKeyWhere: and(
+          eq(schema.content.type, "page"),
+          eq(schema.content.slug, page.slug),
+          isNull(schema.content.deleted_at)
+        ),
+      }
+    );
 
-    pageIdBySlug.set(page.slug, inserted[0].id);
+    pageIdBySlug.set(page.slug, insertedId);
   }
 
   // 7. Page parent_id — pass 2: resolve slug → UUID for pages that have a parent
@@ -345,9 +364,10 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
 
   for (const [key, term] of termMap) {
     const id = newId();
-    const inserted = await db
-      .insert(schema.terms)
-      .values({
+    const insertedId = await upsertReturningId(
+      db,
+      schema.terms,
+      {
         id,
         taxonomy: term.taxonomy,
         slug: term.slug,
@@ -357,17 +377,23 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
         count: 0,
         created_at: now,
         updated_at: now,
-      })
-      .onConflictDoUpdate({
-        target: [schema.terms.taxonomy, schema.terms.slug],
-        set: {
+      },
+      {
+        conflictTarget: [schema.terms.taxonomy, schema.terms.slug],
+        updateSet: {
           label: term.label,
           updated_at: now,
         },
-      })
-      .returning({ id: schema.terms.id });
+        idColumn: schema.terms.id,
+        // MySQL has no RETURNING: identify the live term row by its natural key.
+        naturalKeyWhere: and(
+          eq(schema.terms.taxonomy, term.taxonomy),
+          eq(schema.terms.slug, term.slug)
+        ),
+      }
+    );
 
-    termIdMap.set(key, inserted[0].id);
+    termIdMap.set(key, insertedId);
   }
 
   // 9. Insert term_relationships — idempotent via onConflictDoNothing on composite PK
@@ -379,10 +405,12 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       const slug = slugifyTag(rawTag);
       const termId = termIdMap.get(`tag:${slug}`);
       if (!termId) continue;
-      await db
-        .insert(schema.term_relationships)
-        .values({ content_id: contentId, term_id: termId })
-        .onConflictDoNothing();
+      await insertIgnore(
+        db,
+        schema.term_relationships,
+        { content_id: contentId, term_id: termId },
+        { selfRefColumn: schema.term_relationships.content_id }
+      );
     }
 
     for (const rawCat of post.categories) {
@@ -390,10 +418,12 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       if (!slug) continue;
       const termId = termIdMap.get(`category:${slug}`);
       if (!termId) continue;
-      await db
-        .insert(schema.term_relationships)
-        .values({ content_id: contentId, term_id: termId })
-        .onConflictDoNothing();
+      await insertIgnore(
+        db,
+        schema.term_relationships,
+        { content_id: contentId, term_id: termId },
+        { selfRefColumn: schema.term_relationships.content_id }
+      );
     }
   }
 
@@ -419,18 +449,23 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       const metaValue = seoMetaValue(value);
       const id = newId();
 
-      await db
-        .insert(schema.content_meta)
-        .values({
+      await upsert(
+        db,
+        schema.content_meta,
+        {
           id,
           content_id: contentId,
           meta_key: metaKey,
           meta_value: metaValue,
-        })
-        .onConflictDoUpdate({
-          target: [schema.content_meta.content_id, schema.content_meta.meta_key],
-          set: { meta_value: metaValue },
-        });
+        },
+        {
+          conflictTarget: [
+            schema.content_meta.content_id,
+            schema.content_meta.meta_key,
+          ],
+          updateSet: { meta_value: metaValue },
+        }
+      );
     }
   }
 
@@ -448,18 +483,23 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       const metaValue = seoMetaValue(value);
       const id = newId();
 
-      await db
-        .insert(schema.content_meta)
-        .values({
+      await upsert(
+        db,
+        schema.content_meta,
+        {
           id,
           content_id: contentId,
           meta_key: metaKey,
           meta_value: metaValue,
-        })
-        .onConflictDoUpdate({
-          target: [schema.content_meta.content_id, schema.content_meta.meta_key],
-          set: { meta_value: metaValue },
-        });
+        },
+        {
+          conflictTarget: [
+            schema.content_meta.content_id,
+            schema.content_meta.meta_key,
+          ],
+          updateSet: { meta_value: metaValue },
+        }
+      );
     }
   }
 
