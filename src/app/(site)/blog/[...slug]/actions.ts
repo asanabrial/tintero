@@ -78,17 +78,20 @@ export async function unlockPostAction(
   const slug = (formData.get("slug") as string | null) ?? "";
   const password = (formData.get("password") as string | null) ?? "";
 
-  if (!slug) return { error: "Invalid request." };
+  // Return stable error CODES (not English prose) so the client form can
+  // localize them — mirrors the login action. Keys live under
+  // common.passwordUnlock.* in the i18n catalogs.
+  if (!slug) return { error: "invalidRequest" };
 
   const { getRepository } = await import("@/lib/content");
   const post = await getRepository().getPost(slug, { includeDrafts: true });
 
   if (!post || post.visibility !== "password") {
-    return { error: "Invalid request." };
+    return { error: "invalidRequest" };
   }
 
   if (!post.password || post.password !== password) {
-    return { error: "Incorrect password." };
+    return { error: "incorrectPassword" };
   }
 
   // Scope the unlock cookie + post-unlock redirect to the post's canonical
