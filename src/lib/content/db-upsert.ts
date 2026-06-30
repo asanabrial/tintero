@@ -42,13 +42,27 @@
  * method only runs against the matching driver.
  */
 
-import { sql, type Column, type SQL } from "drizzle-orm";
+import { getTableName, sql, type Column, type SQL } from "drizzle-orm";
 import type { Executor } from "./db-transaction";
 
 /** True when the active dialect is MySQL or MariaDB. */
 function isMysqlDialect(): boolean {
   const dialect = (process.env.DATABASE_DIALECT ?? "sqlite").toLowerCase();
   return dialect === "mysql" || dialect === "mariadb";
+}
+
+/**
+ * Best-effort human-readable table name for error messages. Falls back to a
+ * generic label when the drizzle table name cannot be derived.
+ */
+function tableLabel(table: unknown): string {
+  try {
+    const name = getTableName(table as Parameters<typeof getTableName>[0]);
+    if (typeof name === "string" && name.length > 0) return name;
+  } catch {
+    // Fall through to the generic label below.
+  }
+  return "unknown table";
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +111,18 @@ export async function upsertReturningId(
       .from(table)
       .where(opts.naturalKeyWhere)
       .limit(1);
-    return rows[0].id;
+    const row = rows[0];
+    if (!row) {
+      // MySQL has no RETURNING: after ON DUPLICATE KEY UPDATE we re-read the live
+      // row by its natural key. An empty result means the row could not be located
+      // — surface a clear domain error instead of a cryptic `undefined.id` TypeError.
+      throw new Error(
+        `upsertReturningId: the natural key matched no row in "${tableLabel(table)}" ` +
+          `when reading the id back after INSERT ... ON DUPLICATE KEY UPDATE ` +
+          `(MySQL has no RETURNING). The inserted/updated row could not be located by its natural key.`
+      );
+    }
+    return row.id;
   }
 
   const rows: Array<{ id: string }> = await exec

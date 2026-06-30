@@ -20,6 +20,7 @@ import {
   upsert,
   upsertReturningId,
 } from "../../../src/lib/content/db-upsert";
+import * as schema from "../../../src/lib/content/schema.sqlite";
 
 // ---------------------------------------------------------------------------
 // Mock executor — records calls; every method returns the same chainable object
@@ -39,7 +40,7 @@ interface MockExec {
   [key: string]: any;
 }
 
-function makeMockExec(): MockExec {
+function makeMockExec(resolveValue: unknown = [{ id: "live-id" }]): MockExec {
   const calls: RecordedCall[] = [];
   const record =
     (method: string) =>
@@ -62,8 +63,8 @@ function makeMockExec(): MockExec {
     from: record("from"),
     where: record("where"),
     limit: record("limit"),
-    // Thenable: any awaited chain resolves to a single id row.
-    then: (resolve: (v: unknown) => void) => resolve([{ id: "live-id" }]),
+    // Thenable: any awaited chain resolves to the configured value.
+    then: (resolve: (v: unknown) => void) => resolve(resolveValue),
   } as unknown as MockExec;
 
   return exec;
@@ -146,6 +147,33 @@ describe("upsertReturningId — dialect dispatch", () => {
       expect(exec.methods()).not.toContain("returning");
     });
   }
+
+  test("mysql: throws a CLEAR domain error (not a TypeError) when the natural-key SELECT returns no row", async () => {
+    process.env.DATABASE_DIALECT = "mysql";
+    // SELECT resolves to [] → rows[0] is undefined. The guard must convert the
+    // would-be `TypeError: cannot read 'id' of undefined` into a clear domain error.
+    const exec = makeMockExec([]);
+
+    let caught: unknown;
+    try {
+      await upsertReturningId(exec, schema.terms, { id: "client-id" }, {
+        ...ON_CONFLICT_OPTS,
+        idColumn: fakeColumn("id"),
+        naturalKeyWhere: fakeSql,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    // Must NOT be the raw TypeError from dereferencing undefined.
+    expect(caught).not.toBeInstanceOf(TypeError);
+    const message = (caught as Error).message;
+    // Names the table and explains the natural key matched no row.
+    expect(message).toContain("terms");
+    expect(message).toMatch(/no row/i);
+    expect(message).toMatch(/natural key/i);
+  });
 });
 
 describe("upsert — dialect dispatch", () => {

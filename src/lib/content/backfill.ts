@@ -24,6 +24,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { newId, toEpoch, nowEpoch, toBool01 } from "./db-values";
 import { upsertReturningId, upsert, insertIgnore } from "./db-upsert";
+import { withTransaction, type Executor } from "./db-transaction";
 import { slugifyTag } from "./tag";
 import { slugifyCategory, joinSlug } from "./category";
 import { SEO_FIELDS, seoMetaKey, seoMetaValue } from "./seo-meta";
@@ -197,6 +198,14 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
     Promise.all(pages.map((p) => source.readRawPage(p.slug))),
   ]);
 
+  // Atomic write sequence (steps 5-11): all content/term/relationship/meta upserts
+  // and the count reconciliation run inside ONE transaction. A failure partway
+  // through rolls back the WHOLE backfill — no orphan rows. Read-only pre-work
+  // (corpus fetch, raw-body reads, report counts) stays OUTSIDE the transaction.
+  // The inner statements keep their original indentation by design — re-indenting
+  // the whole block would only add noise to the diff.
+  await withTransaction(db, async (tx: Executor) => {
+
   // 5. Upsert posts into content table
   // On conflict (type, slug), update mutable fields and preserve id + created_at.
   const postIdBySlug = new Map<string, string>();
@@ -208,7 +217,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
     const id = newId();
 
     const insertedId = await upsertReturningId(
-      db,
+      tx,
       schema.content,
       {
         id,
@@ -284,7 +293,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
     const id = newId();
 
     const insertedId = await upsertReturningId(
-      db,
+      tx,
       schema.content,
       {
         id,
@@ -352,7 +361,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
     const childId = pageIdBySlug.get(page.slug);
     if (!childId) continue;
 
-    await db
+    await tx
       .update(schema.content)
       .set({ parent_id: parentId, updated_at: now })
       .where(eq(schema.content.id, childId));
@@ -365,7 +374,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
   for (const [key, term] of termMap) {
     const id = newId();
     const insertedId = await upsertReturningId(
-      db,
+      tx,
       schema.terms,
       {
         id,
@@ -406,7 +415,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       const termId = termIdMap.get(`tag:${slug}`);
       if (!termId) continue;
       await insertIgnore(
-        db,
+        tx,
         schema.term_relationships,
         { content_id: contentId, term_id: termId },
         { selfRefColumn: schema.term_relationships.content_id }
@@ -419,7 +428,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       const termId = termIdMap.get(`category:${slug}`);
       if (!termId) continue;
       await insertIgnore(
-        db,
+        tx,
         schema.term_relationships,
         { content_id: contentId, term_id: termId },
         { selfRefColumn: schema.term_relationships.content_id }
@@ -450,7 +459,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       const id = newId();
 
       await upsert(
-        db,
+        tx,
         schema.content_meta,
         {
           id,
@@ -484,7 +493,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
       const id = newId();
 
       await upsert(
-        db,
+        tx,
         schema.content_meta,
         {
           id,
@@ -507,7 +516,7 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
   // Note: backfill is additive. Terms removed from all posts between runs are NOT
   // deleted from the terms table — pruning orphaned terms is a separate operation.
   // content_id rows in term_relationships for that term (GROUP BY across all terms).
-  const relCountRows: Array<{ term_id: string; cnt: unknown }> = await db
+  const relCountRows: Array<{ term_id: string; cnt: unknown }> = await tx
     .select({
       term_id: schema.term_relationships.term_id,
       cnt: sql`count(distinct ${schema.term_relationships.content_id})`,
@@ -516,11 +525,13 @@ export async function runBackfill(opts: BackfillOpts): Promise<BackfillReport> {
     .groupBy(schema.term_relationships.term_id);
 
   for (const row of relCountRows) {
-    await db
+    await tx
       .update(schema.terms)
       .set({ count: Number(row.cnt), updated_at: now })
       .where(eq(schema.terms.id, row.term_id));
   }
+
+  });
 
   return report;
 }
