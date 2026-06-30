@@ -19,7 +19,7 @@ export function PasswordUnlockForm({ slug, locale }: { slug: string; locale?: st
         required
       />
       {state?.error && (
-        <FormAlert tone="error">{state.error}</FormAlert>
+        <FormAlert tone="error">{t(loc, `common.passwordUnlock.${state.error}`)}</FormAlert>
       )}
       <SubmitButton fullWidth label={t(loc, "common.unlock")} pendingLabel={t(loc, "common.checking")} />
     </form>
