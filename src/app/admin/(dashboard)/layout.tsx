@@ -108,7 +108,10 @@ function SidebarShell({ children, locale }: { children: React.ReactNode; locale:
         {/* Sidebar — hidden on mobile, visible on lg+ */}
         {/* WordPress-style admin menu: fixed dark charcoal regardless of the
             site color scheme, white brand, blue active item. */}
-        <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 bg-[#1d2327] text-[#c3c4c7]">
+        <aside
+          data-admin-chrome
+          className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 bg-[#1d2327] text-[#c3c4c7]"
+        >
           <div className="p-4 border-b border-white/10">
             <Link
               href="/admin"
@@ -137,7 +140,10 @@ function SidebarShell({ children, locale }: { children: React.ReactNode; locale:
 
         {/* Mobile nav — role-filtered via async MobileRoleNav in a Suspense slot.
             fallback={null} prevents layout shift during streaming (ADR-5). */}
-        <div className="lg:hidden border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-4 py-3">
+        <div
+          data-admin-chrome
+          className="lg:hidden border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-4 py-3"
+        >
           <Suspense fallback={null}>
             <MobileRoleNav />
           </Suspense>

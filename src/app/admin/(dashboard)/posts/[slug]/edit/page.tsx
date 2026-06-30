@@ -5,9 +5,8 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { verifySession } from "@/lib/auth/dal";
-import { getWriter, getRepository, getLayoutSiteConfig } from "@/lib/content";
+import { getWriter, getRepository } from "@/lib/content";
 import { getUserRepository } from "@/lib/auth/factory";
-import { t } from "@/lib/i18n";
 import { PostForm } from "../../post-form";
 import { updatePostAction } from "../../actions";
 import type { PostFormInitial } from "../../post-form";
@@ -18,7 +17,6 @@ interface EditPostContentProps {
 
 async function EditPostContent({ params }: EditPostContentProps) {
   await verifySession();
-  const { language: loc } = await getLayoutSiteConfig();
 
   const { slug } = await params;
 
@@ -88,31 +86,21 @@ async function EditPostContent({ params }: EditPostContentProps) {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">{t(loc, "admin.posts.editPost")}</h1>
-        <a
-          href={`/admin/posts/${slug}/revisions`}
-          className="text-sm text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-50 underline"
-        >
-          {t(loc, "admin.revisions.title")}
-        </a>
-      </div>
-      <PostForm
-        action={updatePostAction}
-        initial={initial}
-        currentSlug={slug}
-        categories={categories.map((c) => ({
-          slug: c.slug,
-          label: c.label,
-          count: c.count,
-          depth: c.depth,
-        }))}
-        tags={tags.map((t) => ({ slug: t.slug, label: t.label, count: t.count }))}
-        authors={users.map((u) => ({ name: u.name, email: u.email }))}
-        baseUrl={config.baseUrl}
-      />
-    </div>
+    <PostForm
+      action={updatePostAction}
+      initial={initial}
+      currentSlug={slug}
+      categories={categories.map((c) => ({
+        slug: c.slug,
+        label: c.label,
+        count: c.count,
+        depth: c.depth,
+      }))}
+      tags={tags.map((t) => ({ slug: t.slug, label: t.label, count: t.count }))}
+      authors={users.map((u) => ({ name: u.name, email: u.email }))}
+      baseUrl={config.baseUrl}
+      revisionsHref={`/admin/posts/${slug}/revisions`}
+    />
   );
 }
 

@@ -7,7 +7,6 @@ import { redirect } from "next/navigation";
 import { verifySession } from "@/lib/auth/dal";
 import { can } from "@/lib/auth/capabilities";
 import { getRepository } from "@/lib/content";
-import { t } from "@/lib/i18n";
 import { PageForm } from "../page-form";
 import { createPageAction } from "../actions";
 
@@ -28,17 +27,14 @@ async function NewPageContent() {
   const pageList = pages.map((p) => ({ slug: p.slug, title: p.title }));
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50 mb-6">
-        {t(config.language ?? "en", "admin.pages.newPage")}
-      </h1>
-      <PageForm
-        action={createPageAction}
-        initial={{ date: defaultDate }}
-        pages={pageList}
-        baseUrl={config.baseUrl}
-      />
-    </div>
+    <PageForm
+      action={createPageAction}
+      // A brand-new page starts as a draft (WordPress page model) — published
+      // only when the author clicks Publish.
+      initial={{ date: defaultDate, status: "draft" }}
+      pages={pageList}
+      baseUrl={config.baseUrl}
+    />
   );
 }
 

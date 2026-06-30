@@ -6,8 +6,7 @@ import { Suspense } from "react";
 import { notFound, redirect } from "next/navigation";
 import { verifySession } from "@/lib/auth/dal";
 import { can } from "@/lib/auth/capabilities";
-import { getPageWriter, getRepository, getLayoutSiteConfig } from "@/lib/content";
-import { t } from "@/lib/i18n";
+import { getPageWriter, getRepository } from "@/lib/content";
 import { PageForm } from "../../page-form";
 import { updatePageAction } from "../../actions";
 import type { PageFormInitial } from "../../page-form";
@@ -19,7 +18,6 @@ interface EditPageContentProps {
 async function EditPageContent({ params }: EditPageContentProps) {
   const session = await verifySession();
   if (!can(session.role, "pages:edit")) redirect("/admin");
-  const { language: loc } = await getLayoutSiteConfig();
 
   const { slug } = await params;
 
@@ -69,24 +67,13 @@ async function EditPageContent({ params }: EditPageContentProps) {
   const pageList = pages.map((p) => ({ slug: p.slug, title: p.title }));
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">{t(loc, "admin.pages.editPage")}</h1>
-        <a
-          href={`/admin/pages/${slug}/revisions`}
-          className="text-sm text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-50 underline"
-        >
-          {t(loc, "admin.revisions.title")}
-        </a>
-      </div>
-      <PageForm
-        action={updatePageAction.bind(null, slug)}
-        initial={initial}
-        currentSlug={slug}
-        pages={pageList}
-        baseUrl={config.baseUrl}
-      />
-    </div>
+    <PageForm
+      action={updatePageAction.bind(null, slug)}
+      initial={initial}
+      currentSlug={slug}
+      pages={pageList}
+      baseUrl={config.baseUrl}
+    />
   );
 }
 
