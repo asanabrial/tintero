@@ -63,6 +63,8 @@ interface PostFormProps {
   authors?: { name: string | null; email: string }[];
   /** Site base URL — used to render the permalink preview under the title. */
   baseUrl?: string;
+  /** When set (edit screen), shows a Revisions link in the options (⋮) menu. */
+  revisionsHref?: string;
 }
 
 function parseCsv(s?: string): string[] {
@@ -102,6 +104,7 @@ export function PostForm({
   tags,
   authors,
   baseUrl,
+  revisionsHref,
 }: PostFormProps) {
   const tr = useT();
   const [state, dispatch] = useActionState<PostFormState, FormData>(action, undefined);
@@ -181,6 +184,11 @@ export function PostForm({
       >
         {tr("admin.editor.preview")}
       </a>
+      {revisionsHref ? (
+        <a href={revisionsHref} role="menuitem" className={menuRowClass}>
+          {tr("admin.revisions.title")}
+        </a>
+      ) : null}
       <a
         href={`/admin/posts/${currentSlug}/delete`}
         role="menuitem"

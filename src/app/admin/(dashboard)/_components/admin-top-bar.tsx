@@ -5,7 +5,10 @@ import { ThemeToggle } from "./theme-toggle";
 
 export function AdminTopBar({ locale }: { locale: string }) {
   return (
-    <header className="flex h-10 w-full items-center justify-between gap-4 bg-zinc-900 px-4 text-sm text-zinc-100">
+    <header
+      data-admin-chrome
+      className="flex h-10 w-full items-center justify-between gap-4 bg-zinc-900 px-4 text-sm text-zinc-100"
+    >
       <div className="flex items-center gap-4">
         <a
           href="/"

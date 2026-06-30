@@ -128,16 +128,23 @@ export function EditorShell({
   const closePanel = () => (isDesktopView() ? setOpen(false) : setMobileOpen(false));
 
   return (
-    // A self-contained, fixed-height editor that fills the area below the admin
-    // top bar (h-10 = 2.5rem) and scrolls INTERNALLY — the top bar and settings
-    // panel stay put while only the canvas scrolls (WordPress behaviour). This
-    // also avoids the broken sticky-header gap that appears when the whole window
-    // scrolls instead. Negative margins bleed past the dashboard content padding.
-    <div className="-mx-6 -my-6 flex h-[calc(100vh-2.5rem)] flex-col overflow-hidden bg-white dark:bg-zinc-900 lg:-mx-8 lg:-my-8">
-      {/* The editor fills the viewport like WordPress; the dashboard's footer
-          would push the page into a small extra scroll, so hide it (and its
-          scroll) only while an editor is mounted. Reverts on navigation away. */}
-      <style dangerouslySetInnerHTML={{ __html: "main>footer{display:none}" }} />
+    // A self-contained, full-viewport editor (WordPress fullscreen mode) that
+    // scrolls INTERNALLY — its own top bar and settings panel stay put while only
+    // the canvas scrolls. The negative margins bleed past the dashboard content
+    // padding; with the admin chrome hidden (see injected CSS below) they cancel
+    // `main`'s padding exactly on all four sides, so `h-screen` fills the viewport
+    // edge to edge with no outer scrollbar.
+    <div className="-mx-6 -my-6 flex h-screen flex-col overflow-hidden bg-white dark:bg-zinc-900 lg:-mx-8 lg:-my-8">
+      {/* WordPress fullscreen: while an editor is mounted, hide ALL admin chrome
+          (top bar, left sidebar, mobile nav — every [data-admin-chrome] element)
+          plus the dashboard footer, so the editor owns the whole viewport. This
+          <style> is scoped to EditorShell, so React unmounts it on navigation
+          away and the chrome is fully restored — the effect is reversible. */}
+      <style
+        dangerouslySetInnerHTML={{
+          __html: "main>footer{display:none}[data-admin-chrome]{display:none}",
+        }}
+      />
       {/* Top action bar — WordPress three-zone layout (brand + tools · title ·
           actions). First flex child, stays fixed above the scrolling canvas. */}
       <header className="flex h-14 shrink-0 items-stretch justify-between border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
