@@ -76,9 +76,25 @@ interface MysqlExecutor {
 }
 
 /**
+ * Mask the `user:password` userinfo of a connection URL before it is interpolated
+ * into a log or error message, e.g. `mysql://root:pw@127.0.0.1:3307/db` →
+ * `mysql://***@127.0.0.1:3307/db`. Operates on the raw string (not `new URL`) so it
+ * still redacts MALFORMED URLs whose userinfo never parsed. URLs without userinfo
+ * are returned unchanged.
+ */
+export function redactDatabaseUrl(databaseUrl: string): string {
+  // Replace everything between the scheme separator "://" and the first "@" —
+  // that span is the userinfo (user[:password]) — with a fixed mask.
+  return databaseUrl.replace(/(:\/\/)[^/@]*@/, "$1***@");
+}
+
+/**
  * Derive the database (schema) name from a MySQL/MariaDB connection URL by
  * reading its path segment, e.g. `mysql://root:pw@127.0.0.1:3307/tintero` →
  * `tintero`. Throws when the URL has no database in its path.
+ *
+ * Error messages interpolate a CREDENTIAL-REDACTED form of the URL (see
+ * `redactDatabaseUrl`) so a leaked DATABASE_URL never exposes its password in logs.
  */
 export function databaseNameFromUrl(databaseUrl: string): string {
   let parsed: URL;
@@ -86,13 +102,13 @@ export function databaseNameFromUrl(databaseUrl: string): string {
     parsed = new URL(databaseUrl);
   } catch {
     throw new Error(
-      `DATABASE_URL is not a valid URL — cannot derive the database name from "${databaseUrl}"`
+      `DATABASE_URL is not a valid URL — cannot derive the database name from "${redactDatabaseUrl(databaseUrl)}"`
     );
   }
   const name = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
   if (!name) {
     throw new Error(
-      `DATABASE_URL has no database name in its path — expected mysql://host:port/<db>, got "${databaseUrl}"`
+      `DATABASE_URL has no database name in its path — expected mysql://host:port/<db>, got "${redactDatabaseUrl(databaseUrl)}"`
     );
   }
   return name;
