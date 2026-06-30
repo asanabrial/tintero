@@ -9,15 +9,13 @@
  *   - Trash operations: NOT implemented (throw "Phase 5 Slice C")
  *   - Pages: NOT implemented (separate slice)
  *
- * Atomicity decision:
- *   drizzle bun-sqlite uses a SYNCHRONOUS transaction callback (db.transaction(cb))
- *   which is incompatible with the async writes required here. drizzle postgres uses
- *   an async callback. Wrapping both in a single shared async transaction helper is
- *   impractical without per-driver branching. Decision: sequential writes (no
- *   transactions) consistent with backfill.ts. This means a mid-write failure can
- *   leave the DB in a partially-written state (e.g. content row inserted but terms
- *   not yet written). Acceptable for a low-frequency blog writer; revisit in a
- *   future slice that adds per-driver transaction wrappers.
+ * Atomicity:
+ *   Each mutating method wraps its full write sequence in a single transaction via
+ *   `withTransaction` (see ./db-transaction), using libSQL's async transaction API
+ *   (db.transaction(async tx => ...)). A mid-write failure rolls back the WHOLE
+ *   operation — no orphan content / term / relationship / meta rows. Read-only
+ *   pre-work (validation, slug derivation, collision lookups) stays OUTSIDE the
+ *   transaction; best-effort revision capture runs AFTER it commits.
  *
  * ADR-7 note:
  *   The FS writer preserves unknown frontmatter keys via a rawData spread (ADR-7).
@@ -63,6 +61,7 @@ import type { PostSeo } from "./types";
 import type { RevisionContext } from "../revisions/types";
 import type { RevisionRepository } from "../revisions/ports";
 import { getRevisionRepository } from "../revisions/factory";
+import { withTransaction, type Executor } from "./db-transaction";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DrizzleDb = any;
@@ -135,13 +134,14 @@ export class DrizzleContentWriter implements ContentWriter {
    * Returns the term's DB id.
    */
   private async upsertTerm(
+    exec: Executor,
     taxonomy: string,
     slug: string,
     label: string
   ): Promise<string> {
     const now = nowEpoch();
     const id = newId();
-    const result: Array<{ id: string }> = await this.db
+    const result: Array<{ id: string }> = await exec
       .insert(this.schema.terms)
       .values({
         id,
@@ -170,12 +170,15 @@ export class DrizzleContentWriter implements ContentWriter {
    * brings its terms' counts back.
    * Sets count = 0 for terms no longer referenced by any live post.
    */
-  private async reconcileTermCounts(termIds: string[]): Promise<void> {
+  private async reconcileTermCounts(
+    exec: Executor,
+    termIds: string[]
+  ): Promise<void> {
     if (termIds.length === 0) return;
     const now = nowEpoch();
     const uniqueIds = [...new Set(termIds)];
 
-    const counts: Array<{ term_id: string; cnt: unknown }> = await this.db
+    const counts: Array<{ term_id: string; cnt: unknown }> = await exec
       .select({
         term_id: this.schema.term_relationships.term_id,
         cnt: sql`count(distinct ${this.schema.term_relationships.content_id})`,
@@ -197,7 +200,7 @@ export class DrizzleContentWriter implements ContentWriter {
 
     for (const termId of uniqueIds) {
       const cnt = countMap.get(termId) ?? 0;
-      await this.db
+      await exec
         .update(this.schema.terms)
         .set({ count: cnt, updated_at: now })
         .where(eq(this.schema.terms.id, termId));
@@ -209,6 +212,7 @@ export class DrizzleContentWriter implements ContentWriter {
    * Uses onConflictDoUpdate so callers may re-use it idempotently.
    */
   private async insertSeoMeta(
+    exec: Executor,
     contentId: string,
     seo: PostSeo | undefined
   ): Promise<void> {
@@ -219,7 +223,7 @@ export class DrizzleContentWriter implements ContentWriter {
       const value = cleaned[field];
       if (value === undefined) continue;
       const id = newId();
-      await this.db
+      await exec
         .insert(this.schema.content_meta)
         .values({
           id,
@@ -243,11 +247,12 @@ export class DrizzleContentWriter implements ContentWriter {
    * This is simpler than diffing and correctly handles field removal.
    */
   private async updateSeoMeta(
+    exec: Executor,
     contentId: string,
     seo: PostSeo | undefined
   ): Promise<void> {
     // Step 1: delete all existing seo rows for this content
-    await this.db
+    await exec
       .delete(this.schema.content_meta)
       .where(
         and(
@@ -264,7 +269,7 @@ export class DrizzleContentWriter implements ContentWriter {
       const value = cleaned[field];
       if (value === undefined) continue;
       const id = newId();
-      await this.db.insert(this.schema.content_meta).values({
+      await exec.insert(this.schema.content_meta).values({
         id,
         content_id: contentId,
         meta_key: seoMetaKey(field),
@@ -332,59 +337,62 @@ export class DrizzleContentWriter implements ContentWriter {
     const now = nowEpoch();
     const contentId = newId();
 
-    // Insert content row (sequential write — see atomicity note in module header)
-    await this.db.insert(this.schema.content).values({
-      id: contentId,
-      type: "post",
-      slug: finalSlug,
-      title: parseResult.data.title,
-      status: parseResult.data.status,
-      visibility: parseResult.data.visibility ?? "public",
-      password: parseResult.data.password ?? null,
-      body_markdown: input.body,
-      excerpt: parseResult.data.excerpt ?? null,
-      cover_image: parseResult.data.coverImage ?? null,
-      author_label: parseResult.data.author ?? null,
-      author_id: parseResult.data.authorId ?? null,
-      sticky: toBool01(input.sticky ?? false),
-      comments_enabled: toBool01(parseResult.data.comments),
-      parent_id: null,
-      menu_order: 0,
-      published_at: toEpoch(parseResult.data.date),
-      created_at: now,
-      updated_at: now,
-      deleted_at: null,
+    // Atomic write sequence: content row + terms + relationships + SEO meta +
+    // count reconciliation. A failure anywhere rolls the whole thing back.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx.insert(this.schema.content).values({
+        id: contentId,
+        type: "post",
+        slug: finalSlug,
+        title: parseResult.data.title,
+        status: parseResult.data.status,
+        visibility: parseResult.data.visibility ?? "public",
+        password: parseResult.data.password ?? null,
+        body_markdown: input.body,
+        excerpt: parseResult.data.excerpt ?? null,
+        cover_image: parseResult.data.coverImage ?? null,
+        author_label: parseResult.data.author ?? null,
+        author_id: parseResult.data.authorId ?? null,
+        sticky: toBool01(input.sticky ?? false),
+        comments_enabled: toBool01(parseResult.data.comments),
+        parent_id: null,
+        menu_order: 0,
+        published_at: toEpoch(parseResult.data.date),
+        created_at: now,
+        updated_at: now,
+        deleted_at: null,
+      });
+
+      // Upsert terms + relationships
+      const affectedTermIds: string[] = [];
+
+      for (const rawTag of parseResult.data.tags) {
+        const slug = slugifyTag(rawTag);
+        const termId = await this.upsertTerm(tx, "tag", slug, rawTag);
+        await tx
+          .insert(this.schema.term_relationships)
+          .values({ content_id: contentId, term_id: termId })
+          .onConflictDoNothing();
+        affectedTermIds.push(termId);
+      }
+
+      for (const rawCat of parseResult.data.categories) {
+        const slug = joinSlug(slugifyCategory(rawCat));
+        if (!slug) continue;
+        const termId = await this.upsertTerm(tx, "category", slug, rawCat);
+        await tx
+          .insert(this.schema.term_relationships)
+          .values({ content_id: contentId, term_id: termId })
+          .onConflictDoNothing();
+        affectedTermIds.push(termId);
+      }
+
+      // Write SEO content_meta rows
+      await this.insertSeoMeta(tx, contentId, parseResult.data.seo);
+
+      // Reconcile term counts for affected terms
+      await this.reconcileTermCounts(tx, affectedTermIds);
     });
-
-    // Upsert terms + relationships
-    const affectedTermIds: string[] = [];
-
-    for (const rawTag of parseResult.data.tags) {
-      const slug = slugifyTag(rawTag);
-      const termId = await this.upsertTerm("tag", slug, rawTag);
-      await this.db
-        .insert(this.schema.term_relationships)
-        .values({ content_id: contentId, term_id: termId })
-        .onConflictDoNothing();
-      affectedTermIds.push(termId);
-    }
-
-    for (const rawCat of parseResult.data.categories) {
-      const slug = joinSlug(slugifyCategory(rawCat));
-      if (!slug) continue;
-      const termId = await this.upsertTerm("category", slug, rawCat);
-      await this.db
-        .insert(this.schema.term_relationships)
-        .values({ content_id: contentId, term_id: termId })
-        .onConflictDoNothing();
-      affectedTermIds.push(termId);
-    }
-
-    // Write SEO content_meta rows
-    await this.insertSeoMeta(contentId, parseResult.data.seo);
-
-    // Reconcile term counts for affected terms
-    await this.reconcileTermCounts(affectedTermIds);
 
     // Build the full serialized markdown for revision capture — mirrors FsContentWriter.createPost.
     // Slug is pinned in frontmatter only when it differs from the title-derived slug
@@ -524,63 +532,67 @@ export class DrizzleContentWriter implements ContentWriter {
       .where(eq(this.schema.term_relationships.content_id, contentId));
     const oldTermIds = oldTermRels.map((r) => r.term_id);
 
-    // UPDATE content row by ID — preserve author_id from existing row (ADR-7 parity)
-    await this.db
-      .update(this.schema.content)
-      .set({
-        slug: newSlug,
-        title: parseResult.data.title,
-        status: parseResult.data.status,
-        visibility: parseResult.data.visibility ?? "public",
-        password: parseResult.data.password ?? null,
-        body_markdown: input.body,
-        excerpt: parseResult.data.excerpt ?? null,
-        cover_image: parseResult.data.coverImage ?? null,
-        author_label: parseResult.data.author ?? null,
-        // author_id is preserved from the existing row (not overwritten from input)
-        author_id: existingAuthorId,
-        sticky: toBool01(input.sticky ?? false),
-        comments_enabled: toBool01(parseResult.data.comments),
-        published_at: toEpoch(parseResult.data.date),
-        updated_at: now,
-      })
-      .where(eq(this.schema.content.id, contentId));
+    // Atomic write sequence: content UPDATE + term relationship replacement +
+    // SEO meta replacement + count reconciliation roll back together on failure.
+    await withTransaction(this.db, async (tx: Executor) => {
+      // UPDATE content row by ID — preserve author_id from existing row (ADR-7 parity)
+      await tx
+        .update(this.schema.content)
+        .set({
+          slug: newSlug,
+          title: parseResult.data.title,
+          status: parseResult.data.status,
+          visibility: parseResult.data.visibility ?? "public",
+          password: parseResult.data.password ?? null,
+          body_markdown: input.body,
+          excerpt: parseResult.data.excerpt ?? null,
+          cover_image: parseResult.data.coverImage ?? null,
+          author_label: parseResult.data.author ?? null,
+          // author_id is preserved from the existing row (not overwritten from input)
+          author_id: existingAuthorId,
+          sticky: toBool01(input.sticky ?? false),
+          comments_enabled: toBool01(parseResult.data.comments),
+          published_at: toEpoch(parseResult.data.date),
+          updated_at: now,
+        })
+        .where(eq(this.schema.content.id, contentId));
 
-    // Delete all old term_relationships for this content
-    await this.db
-      .delete(this.schema.term_relationships)
-      .where(eq(this.schema.term_relationships.content_id, contentId));
+      // Delete all old term_relationships for this content
+      await tx
+        .delete(this.schema.term_relationships)
+        .where(eq(this.schema.term_relationships.content_id, contentId));
 
-    // Upsert new terms + relationships
-    const newTermIds: string[] = [];
+      // Upsert new terms + relationships
+      const newTermIds: string[] = [];
 
-    for (const rawTag of parseResult.data.tags) {
-      const slug = slugifyTag(rawTag);
-      const termId = await this.upsertTerm("tag", slug, rawTag);
-      await this.db
-        .insert(this.schema.term_relationships)
-        .values({ content_id: contentId, term_id: termId })
-        .onConflictDoNothing();
-      newTermIds.push(termId);
-    }
+      for (const rawTag of parseResult.data.tags) {
+        const slug = slugifyTag(rawTag);
+        const termId = await this.upsertTerm(tx, "tag", slug, rawTag);
+        await tx
+          .insert(this.schema.term_relationships)
+          .values({ content_id: contentId, term_id: termId })
+          .onConflictDoNothing();
+        newTermIds.push(termId);
+      }
 
-    for (const rawCat of parseResult.data.categories) {
-      const slug = joinSlug(slugifyCategory(rawCat));
-      if (!slug) continue;
-      const termId = await this.upsertTerm("category", slug, rawCat);
-      await this.db
-        .insert(this.schema.term_relationships)
-        .values({ content_id: contentId, term_id: termId })
-        .onConflictDoNothing();
-      newTermIds.push(termId);
-    }
+      for (const rawCat of parseResult.data.categories) {
+        const slug = joinSlug(slugifyCategory(rawCat));
+        if (!slug) continue;
+        const termId = await this.upsertTerm(tx, "category", slug, rawCat);
+        await tx
+          .insert(this.schema.term_relationships)
+          .values({ content_id: contentId, term_id: termId })
+          .onConflictDoNothing();
+        newTermIds.push(termId);
+      }
 
-    // Replace SEO meta (delete old set, insert new set)
-    await this.updateSeoMeta(contentId, parseResult.data.seo);
+      // Replace SEO meta (delete old set, insert new set)
+      await this.updateSeoMeta(tx, contentId, parseResult.data.seo);
 
-    // Reconcile term counts for all affected terms (old + new)
-    const allAffected = [...new Set([...oldTermIds, ...newTermIds])];
-    await this.reconcileTermCounts(allAffected);
+      // Reconcile term counts for all affected terms (old + new)
+      const allAffected = [...new Set([...oldTermIds, ...newTermIds])];
+      await this.reconcileTermCounts(tx, allAffected);
+    });
 
     // Build the full serialized markdown for revision capture — mirrors FsContentWriter.updatePost.
     // Slug is pinned only when it differs from what deriveSlug would infer from the (new) title.
@@ -644,22 +656,26 @@ export class DrizzleContentWriter implements ContentWriter {
       .where(eq(this.schema.term_relationships.content_id, contentId));
     const affectedTermIds = termRels.map((r) => r.term_id);
 
-    // Cascade: delete term_relationships and content_meta before the content row
-    await this.db
-      .delete(this.schema.term_relationships)
-      .where(eq(this.schema.term_relationships.content_id, contentId));
+    // Atomic cascade: term_relationships + content_meta + content + count
+    // reconciliation roll back together on failure.
+    await withTransaction(this.db, async (tx: Executor) => {
+      // Cascade: delete term_relationships and content_meta before the content row
+      await tx
+        .delete(this.schema.term_relationships)
+        .where(eq(this.schema.term_relationships.content_id, contentId));
 
-    await this.db
-      .delete(this.schema.content_meta)
-      .where(eq(this.schema.content_meta.content_id, contentId));
+      await tx
+        .delete(this.schema.content_meta)
+        .where(eq(this.schema.content_meta.content_id, contentId));
 
-    // Hard-delete the content row
-    await this.db
-      .delete(this.schema.content)
-      .where(eq(this.schema.content.id, contentId));
+      // Hard-delete the content row
+      await tx
+        .delete(this.schema.content)
+        .where(eq(this.schema.content.id, contentId));
 
-    // Reconcile counts for freed terms
-    await this.reconcileTermCounts(affectedTermIds);
+      // Reconcile counts for freed terms
+      await this.reconcileTermCounts(tx, affectedTermIds);
+    });
 
     return { ok: true, slug };
   }
@@ -828,10 +844,13 @@ export class DrizzleContentWriter implements ContentWriter {
 
     const r = rows[0];
     const now = nowEpoch();
-    await this.db
-      .update(this.schema.content)
-      .set({ status, updated_at: now })
-      .where(eq(this.schema.content.id, r.id));
+    // Single-statement write, wrapped for a uniform atomic boundary.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx
+        .update(this.schema.content)
+        .set({ status, updated_at: now })
+        .where(eq(this.schema.content.id, r.id));
+    });
 
     // Build serialized markdown for revision capture — mirrors FsContentWriter.setPostStatus
     // which does: mergedData = { ...existing.rawData, status }; captureRevision(rawContent).
@@ -943,17 +962,21 @@ export class DrizzleContentWriter implements ContentWriter {
     const contentId = rows[0].id;
     const now = nowEpoch();
 
-    await this.db
-      .update(this.schema.content)
-      .set({ deleted_at: now, updated_at: now })
-      .where(eq(this.schema.content.id, contentId));
+    // Atomic: the deleted_at UPDATE and the dependent count reconciliation (which
+    // must observe the in-transaction trashed state) roll back together.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx
+        .update(this.schema.content)
+        .set({ deleted_at: now, updated_at: now })
+        .where(eq(this.schema.content.id, contentId));
 
-    // Reconcile term counts — trashed post no longer counts as live
-    const termRels: Array<{ term_id: string }> = await this.db
-      .select({ term_id: this.schema.term_relationships.term_id })
-      .from(this.schema.term_relationships)
-      .where(eq(this.schema.term_relationships.content_id, contentId));
-    await this.reconcileTermCounts(termRels.map((r) => r.term_id));
+      // Reconcile term counts — trashed post no longer counts as live
+      const termRels: Array<{ term_id: string }> = await tx
+        .select({ term_id: this.schema.term_relationships.term_id })
+        .from(this.schema.term_relationships)
+        .where(eq(this.schema.term_relationships.content_id, contentId));
+      await this.reconcileTermCounts(tx, termRels.map((r) => r.term_id));
+    });
 
     return { ok: true, slug };
   }
@@ -1038,17 +1061,21 @@ export class DrizzleContentWriter implements ContentWriter {
     const contentId = trashedRows[0].id;
     const now = nowEpoch();
 
-    await this.db
-      .update(this.schema.content)
-      .set({ deleted_at: null, updated_at: now })
-      .where(eq(this.schema.content.id, contentId));
+    // Atomic: the deleted_at clear and the dependent count reconciliation (which
+    // must observe the in-transaction live state) roll back together.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx
+        .update(this.schema.content)
+        .set({ deleted_at: null, updated_at: now })
+        .where(eq(this.schema.content.id, contentId));
 
-    // Reconcile term counts — restored post is now live
-    const termRels: Array<{ term_id: string }> = await this.db
-      .select({ term_id: this.schema.term_relationships.term_id })
-      .from(this.schema.term_relationships)
-      .where(eq(this.schema.term_relationships.content_id, contentId));
-    await this.reconcileTermCounts(termRels.map((r) => r.term_id));
+      // Reconcile term counts — restored post is now live
+      const termRels: Array<{ term_id: string }> = await tx
+        .select({ term_id: this.schema.term_relationships.term_id })
+        .from(this.schema.term_relationships)
+        .where(eq(this.schema.term_relationships.content_id, contentId));
+      await this.reconcileTermCounts(tx, termRels.map((r) => r.term_id));
+    });
 
     return { ok: true, slug };
   }
@@ -1087,21 +1114,24 @@ export class DrizzleContentWriter implements ContentWriter {
       .where(eq(this.schema.term_relationships.content_id, contentId));
     const affectedTermIds = termRels.map((r) => r.term_id);
 
-    // Cascade: term_relationships → content_meta → content
-    await this.db
-      .delete(this.schema.term_relationships)
-      .where(eq(this.schema.term_relationships.content_id, contentId));
+    // Atomic cascade: term_relationships → content_meta → content + count
+    // reconciliation roll back together on failure.
+    await withTransaction(this.db, async (tx: Executor) => {
+      await tx
+        .delete(this.schema.term_relationships)
+        .where(eq(this.schema.term_relationships.content_id, contentId));
 
-    await this.db
-      .delete(this.schema.content_meta)
-      .where(eq(this.schema.content_meta.content_id, contentId));
+      await tx
+        .delete(this.schema.content_meta)
+        .where(eq(this.schema.content_meta.content_id, contentId));
 
-    await this.db
-      .delete(this.schema.content)
-      .where(eq(this.schema.content.id, contentId));
+      await tx
+        .delete(this.schema.content)
+        .where(eq(this.schema.content.id, contentId));
 
-    // Reconcile term counts for freed terms
-    await this.reconcileTermCounts(affectedTermIds);
+      // Reconcile term counts for freed terms
+      await this.reconcileTermCounts(tx, affectedTermIds);
+    });
 
     return { ok: true, slug };
   }
