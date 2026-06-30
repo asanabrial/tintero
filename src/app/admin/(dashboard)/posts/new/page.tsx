@@ -6,7 +6,6 @@ import { Suspense } from "react";
 import { verifySession } from "@/lib/auth/dal";
 import { getRepository } from "@/lib/content";
 import { getUserRepository } from "@/lib/auth/factory";
-import { t } from "@/lib/i18n";
 import { PostForm } from "../post-form";
 import { createPostAction } from "../actions";
 
@@ -27,30 +26,27 @@ async function NewPostContent() {
       .catch(() => []), // author list is best-effort — never block post creation
   ]);
 
+  // No page <h1> here — the WordPress-style EditorShell is the full screen and
+  // carries the document title itself (like Gutenberg, which has no page header).
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50 mb-6">
-        {t(config.language ?? "en", "admin.posts.newPost")}
-      </h1>
-      <PostForm
-        action={createPostAction}
-        initial={{
-          date: defaultDate,
-          status: config.writing?.default_post_status ?? "draft",
-          categories: config.writing?.default_post_category ?? "",
-          comments: true,
-        }}
-        categories={categories.map((c) => ({
-          slug: c.slug,
-          label: c.label,
-          count: c.count,
-          depth: c.depth,
-        }))}
-        tags={tags.map((tag) => ({ slug: tag.slug, label: tag.label, count: tag.count }))}
-        authors={users.map((u) => ({ name: u.name, email: u.email }))}
-        baseUrl={config.baseUrl}
-      />
-    </div>
+    <PostForm
+      action={createPostAction}
+      initial={{
+        date: defaultDate,
+        status: config.writing?.default_post_status ?? "draft",
+        categories: config.writing?.default_post_category ?? "",
+        comments: true,
+      }}
+      categories={categories.map((c) => ({
+        slug: c.slug,
+        label: c.label,
+        count: c.count,
+        depth: c.depth,
+      }))}
+      tags={tags.map((tag) => ({ slug: tag.slug, label: tag.label, count: tag.count }))}
+      authors={users.map((u) => ({ name: u.name, email: u.email }))}
+      baseUrl={config.baseUrl}
+    />
   );
 }
 
