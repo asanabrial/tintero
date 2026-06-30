@@ -52,10 +52,16 @@ export default async function RootLayout({
   const colorScheme = themeColorScheme(config.theme);
 
   return (
+    // suppressHydrationWarning: the admin color-scheme boot script re-applies
+    // `data-color-scheme` on <html> before React hydrates (to avoid a theme
+    // flash), so this attribute can legitimately differ from the server-rendered
+    // value. Suppressing the warning is the standard pattern for theme scripts;
+    // it only affects this element's own attributes, one level deep.
     <html
       lang={config.language}
       data-color-scheme={colorScheme}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         {themeCss !== "" && (
