@@ -339,6 +339,7 @@ export const en = {
       statusDraft: "Draft",
       addTitle: "Add title",
       bodyPlaceholder: "Write your story…",
+      fullscreen: "Fullscreen mode",
     },
     table: {
       screenOptions: "Screen Options",
@@ -1162,6 +1163,7 @@ export const es = {
       statusDraft: "Borrador",
       addTitle: "Añadir título",
       bodyPlaceholder: "Escribe tu historia…",
+      fullscreen: "Pantalla completa",
     },
     table: {
       screenOptions: "Opciones de pantalla",
@@ -1986,6 +1988,7 @@ export const fr = {
       statusDraft: "Brouillon",
       addTitle: "Ajouter un titre",
       bodyPlaceholder: "Écrivez votre histoire…",
+      fullscreen: "Mode plein écran",
     },
     table: {
       screenOptions: "Options de l'écran",
@@ -2802,6 +2805,7 @@ export const de = {
       statusDraft: "Entwurf",
       addTitle: "Titel hinzufügen",
       bodyPlaceholder: "Schreibe deine Geschichte…",
+      fullscreen: "Vollbildmodus",
     },
     table: {
       screenOptions: "Anzeigeoptionen",
@@ -3618,6 +3622,7 @@ export const pt = {
       statusDraft: "Rascunho",
       addTitle: "Adicionar título",
       bodyPlaceholder: "Escreva a sua história…",
+      fullscreen: "Modo de ecrã inteiro",
     },
     table: {
       screenOptions: "Opções de ecrã",
@@ -4434,6 +4439,7 @@ export const it = {
       statusDraft: "Bozza",
       addTitle: "Aggiungi titolo",
       bodyPlaceholder: "Scrivi la tua storia…",
+      fullscreen: "Modalità schermo intero",
     },
     table: {
       screenOptions: "Opzioni schermo",

@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@/app/components/ui/form";
 import { useT } from "@/lib/i18n/provider";
+
+const FULLSCREEN_STORAGE_KEY = "tintero:editor-fullscreen";
 
 /**
  * Device-preview options — WordPress's editor lets you preview the canvas at
@@ -120,6 +122,30 @@ export function EditorShell({
   const [device, setDevice] = useState<Device>("desktop");
   const canvasWidth = DEVICES.find((d) => d.key === device)?.maxWidth ?? "56rem";
 
+  // WordPress "fullscreen mode": when ON, the admin sidebar + top bar are hidden
+  // and the editor fills the viewport. Default OFF so the admin menu stays
+  // visible unless the user opts in; the choice is remembered (like WordPress).
+  // Starts false on the server/first paint to avoid hiding the chrome before the
+  // stored preference is read (no SSR flash of a hidden menu).
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    try {
+      setFullscreen(window.localStorage.getItem(FULLSCREEN_STORAGE_KEY) === "1");
+    } catch {
+      /* localStorage unavailable — keep the default (chrome visible). */
+    }
+  }, []);
+  const toggleFullscreen = () =>
+    setFullscreen((v) => {
+      const next = !v;
+      try {
+        window.localStorage.setItem(FULLSCREEN_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore persistence failure */
+      }
+      return next;
+    });
+
   // Route the toggle to the right state for the current breakpoint (checked at
   // click time, so there is no SSR/hydration default-state problem).
   const isDesktopView = () =>
@@ -134,15 +160,24 @@ export function EditorShell({
     // padding; with the admin chrome hidden (see injected CSS below) they cancel
     // `main`'s padding exactly on all four sides, so `h-screen` fills the viewport
     // edge to edge with no outer scrollbar.
-    <div className="-mx-6 -my-6 flex h-screen flex-col overflow-hidden bg-white dark:bg-zinc-900 lg:-mx-8 lg:-my-8">
-      {/* WordPress fullscreen: while an editor is mounted, hide ALL admin chrome
-          (top bar, left sidebar, mobile nav — every [data-admin-chrome] element)
-          plus the dashboard footer, so the editor owns the whole viewport. This
-          <style> is scoped to EditorShell, so React unmounts it on navigation
-          away and the chrome is fully restored — the effect is reversible. */}
+    <div
+      className={cn(
+        "-mx-6 -my-6 flex flex-col overflow-hidden bg-white dark:bg-zinc-900 lg:-mx-8 lg:-my-8",
+        // Fullscreen owns the whole viewport; otherwise it sits below the admin
+        // top bar (h-10 = 2.5rem), beside the still-visible sidebar.
+        fullscreen ? "h-screen" : "h-[calc(100vh-2.5rem)]"
+      )}
+    >
+      {/* WordPress fullscreen mode (opt-in): while ON, hide ALL admin chrome (top
+          bar, left sidebar, mobile nav — every [data-admin-chrome] element) so the
+          editor owns the whole viewport. The dashboard footer is always hidden to
+          avoid an extra scrollbar. This <style> is scoped to EditorShell, so React
+          unmounts it on navigation away and the chrome is fully restored. */}
       <style
         dangerouslySetInnerHTML={{
-          __html: "main>footer{display:none}[data-admin-chrome]{display:none}",
+          __html: fullscreen
+            ? "main>footer{display:none}[data-admin-chrome]{display:none}"
+            : "main>footer{display:none}",
         }}
       />
       {/* Top action bar — WordPress three-zone layout (brand + tools · title ·
@@ -244,45 +279,65 @@ export function EditorShell({
             </svg>
           </button>
 
-          {/* Options "⋮" menu — WordPress's top-right overflow. */}
-          {options ? (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setOptionsOpen((o) => !o)}
-                aria-haspopup="menu"
-                aria-expanded={optionsOpen}
-                aria-label={optionsLabel ?? "Options"}
-                title={optionsLabel ?? "Options"}
-                className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 text-zinc-600 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="h-5 w-5">
-                  <circle cx="12" cy="5" r="1.6" />
-                  <circle cx="12" cy="12" r="1.6" />
-                  <circle cx="12" cy="19" r="1.6" />
-                </svg>
-              </button>
-              {optionsOpen ? (
-                <>
-                  {/* Click-outside backdrop. */}
+          {/* Options "⋮" menu — WordPress's top-right overflow. Always present:
+              it carries the WordPress "Fullscreen mode" toggle, plus any
+              caller-provided rows (Preview / Revisions / Move to Trash). */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setOptionsOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={optionsOpen}
+              aria-label={optionsLabel ?? "Options"}
+              title={optionsLabel ?? "Options"}
+              className="flex h-9 w-9 items-center justify-center rounded-md border border-zinc-300 text-zinc-600 transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="h-5 w-5">
+                <circle cx="12" cy="5" r="1.6" />
+                <circle cx="12" cy="12" r="1.6" />
+                <circle cx="12" cy="19" r="1.6" />
+              </svg>
+            </button>
+            {optionsOpen ? (
+              <>
+                {/* Click-outside backdrop. */}
+                <button
+                  type="button"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  onClick={() => setOptionsOpen(false)}
+                  className="fixed inset-0 z-30 cursor-default"
+                />
+                <div
+                  role="menu"
+                  onClick={() => setOptionsOpen(false)}
+                  className="absolute right-0 top-full z-40 mt-1 w-56 overflow-hidden rounded-md border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  {/* WordPress "Fullscreen mode" toggle — checkmark when active. */}
                   <button
                     type="button"
-                    aria-hidden="true"
-                    tabIndex={-1}
-                    onClick={() => setOptionsOpen(false)}
-                    className="fixed inset-0 z-30 cursor-default"
-                  />
-                  <div
-                    role="menu"
-                    onClick={() => setOptionsOpen(false)}
-                    className="absolute right-0 top-full z-40 mt-1 w-56 overflow-hidden rounded-md border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-800 dark:bg-zinc-900"
+                    role="menuitemcheckbox"
+                    aria-checked={fullscreen}
+                    onClick={toggleFullscreen}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
                   >
-                    {options}
-                  </div>
-                </>
-              ) : null}
-            </div>
-          ) : null}
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#2271b1] dark:text-[#4f94d4]">
+                      {fullscreen ? (
+                        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" className="h-4 w-4">
+                          <path fillRule="evenodd" d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0l-3.5-3.5a1 1 0 1 1 1.4-1.4l2.8 2.8 6.8-6.8a1 1 0 0 1 1.4 0Z" clipRule="evenodd" />
+                        </svg>
+                      ) : null}
+                    </span>
+                    {tr("admin.editor.fullscreen")}
+                  </button>
+                  {options ? (
+                    <div className="my-1 border-t border-zinc-200 dark:border-zinc-800" />
+                  ) : null}
+                  {options}
+                </div>
+              </>
+            ) : null}
+          </div>
         </div>
       </header>
 
