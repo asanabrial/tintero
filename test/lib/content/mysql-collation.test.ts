@@ -66,6 +66,19 @@ describe("databaseNameFromUrl", () => {
     expect(message).not.toBe("");
     expect(message).not.toContain(secret);
   });
+
+  test("does NOT leak a password that itself contains an unencoded '@'", () => {
+    // A password with a literal '@' must still be fully masked: the userinfo is
+    // everything up to the LAST '@' before the host, not the first.
+    let message = "";
+    try {
+      databaseNameFromUrl("mysql://admin:p@ssword-LEAKME@host:badport/db");
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).not.toBe("");
+    expect(message).not.toContain("LEAKME");
+  });
 });
 
 describe("mysqlDatabaseCollationStatement", () => {

@@ -83,9 +83,13 @@ interface MysqlExecutor {
  * are returned unchanged.
  */
 export function redactDatabaseUrl(databaseUrl: string): string {
-  // Replace everything between the scheme separator "://" and the first "@" —
-  // that span is the userinfo (user[:password]) — with a fixed mask.
-  return databaseUrl.replace(/(:\/\/)[^/@]*@/, "$1***@");
+  // Replace the whole userinfo — everything between the scheme separator "://"
+  // and the LAST "@" before the path — with a fixed mask. Matching to the last
+  // "@" (greedy `[^/]*`, which never crosses into the path) ensures a password
+  // that itself contains an unencoded "@" is fully masked, not just up to its
+  // first "@". A host cannot contain "@", so the final "@" always delimits the
+  // userinfo from the host.
+  return databaseUrl.replace(/(:\/\/)[^/]*@/, "$1***@");
 }
 
 /**
