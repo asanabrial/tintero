@@ -53,6 +53,7 @@ export function SeoMetaBox({
   baseUrl,
   urlPrefix = "blog",
   initialSeo,
+  body,
 }: {
   /** Live post title — the fallback when no SEO title override is set. */
   title: string;
@@ -64,6 +65,13 @@ export function SeoMetaBox({
   baseUrl?: string;
   /** URL path segment for the preview ("blog" for posts, "pages" for pages). */
   urlPrefix?: string;
+  /**
+   * Live body markdown. When provided, it is the source for word-count and
+   * keyphrase analysis instead of the DOM query — required for the RichEditor,
+   * whose hidden <input> fires no input event on programmatic value changes.
+   * Omit it to keep the legacy `textarea[name="body"]` fallback for other callers.
+   */
+  body?: string;
   /** Persisted SEO overrides to prefill the fields (edit mode). */
   initialSeo?: {
     title?: string;
@@ -106,11 +114,14 @@ export function SeoMetaBox({
   // Recompute when any tracked field changes; the body is read live at that
   // moment (body-only edits refresh once another field or the keyphrase moves).
   const { assessments, readability } = useMemo(() => {
-    const bodyEl =
-      typeof document !== "undefined"
-        ? (document.querySelector('textarea[name="body"]') as HTMLTextAreaElement | null)
-        : null;
-    const rawBody = bodyEl?.value ?? "";
+    // Prefer the body prop (RichEditor mirrors its markdown into parent state);
+    // fall back to the legacy DOM query when no prop is supplied.
+    const rawBody =
+      body !== undefined
+        ? body
+        : typeof document !== "undefined"
+          ? (document.querySelector('textarea[name="body"]') as HTMLTextAreaElement | null)?.value ?? ""
+          : "";
     const bodyText = stripMarkdown(rawBody);
     return {
       assessments: analyzeSeo({
@@ -124,7 +135,7 @@ export function SeoMetaBox({
       }),
       readability: analyzeReadability(bodyText),
     };
-  }, [effectiveTitle, effectiveDesc, slug, keyphrase, cornerstone]);
+  }, [effectiveTitle, effectiveDesc, slug, keyphrase, cornerstone, body]);
 
   const bullet = overallScore(assessments);
   const readabilityBullet = overallScore(readability);
