@@ -32,7 +32,7 @@ export function MergeTagForm({ rawLabel, otherTags }: MergeTagFormProps) {
 
       {/* Inline error */}
       {state && !state.ok && state.error && (
-        <FormAlert>{state.error}</FormAlert>
+        <FormAlert>{tr(state.error)}</FormAlert>
       )}
 
       {/* Partial failure report */}

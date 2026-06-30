@@ -71,7 +71,7 @@ export function SettingsForm({ action, initial, saved, savedMsg, categories = []
   return (
     <form action={dispatch} noValidate className="max-w-4xl space-y-6">
       {/* Global error */}
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
 
       {/* Success banner — shown when redirected with ?saved=1 */}
       {saved && (

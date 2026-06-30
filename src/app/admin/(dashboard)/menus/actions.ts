@@ -51,7 +51,7 @@ export async function updateNavAction(
   const session = await verifySession();
 
   if (!can(session.role, "menus:manage")) {
-    return { ok: false, error: "You do not have permission to perform this action." };
+    return { ok: false, error: "admin.errors.noPermission" };
   }
 
   // Parse intent from the button that submitted the form
@@ -132,7 +132,7 @@ export async function updateNavAction(
       };
     });
   } else {
-    return { ok: false, error: "Unknown intent" };
+    return { ok: false, error: "admin.errors.unknownIntent" };
   }
 
   // Validate EVERY item; collect itemErrors keyed by index
@@ -214,7 +214,7 @@ export async function updateFooterNavAction(
   const session = await verifySession();
 
   if (!can(session.role, "menus:manage")) {
-    return { ok: false, error: "You do not have permission to perform this action." };
+    return { ok: false, error: "admin.errors.noPermission" };
   }
 
   // Parse intent from the button that submitted the form
@@ -295,7 +295,7 @@ export async function updateFooterNavAction(
       };
     });
   } else {
-    return { ok: false, error: "Unknown intent" };
+    return { ok: false, error: "admin.errors.unknownIntent" };
   }
 
   // Validate EVERY item; collect itemErrors keyed by index

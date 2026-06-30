@@ -53,7 +53,7 @@ export function EditMetaForm({ filename, initialAlt, initialCaption }: EditMetaF
         <p role="status" className="text-xs text-green-700 dark:text-green-400">{tr("admin.media.savedShort")}</p>
       )}
       {state && "error" in state && state.error && (
-        <p role="alert" aria-live="polite" className="text-xs text-red-700 dark:text-red-400">{state.error}</p>
+        <p role="alert" aria-live="polite" className="text-xs text-red-700 dark:text-red-400">{tr(state.error)}</p>
       )}
     </form>
   );

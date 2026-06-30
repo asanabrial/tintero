@@ -39,10 +39,10 @@ export function UserCreateForm({ action }: UserCreateFormProps) {
   return (
     <form action={dispatch} noValidate className="max-w-xl space-y-4">
       {/* Global / guard-level error */}
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
 
       {/* Email */}
-      <Field htmlFor="user-email" label={tr("admin.users.email")} required layout="stacked" error={emailError}>
+      <Field htmlFor="user-email" label={tr("admin.users.email")} required layout="stacked" error={emailError ? tr(emailError) : null}>
         <TextInput
           id="user-email"
           type="email"
@@ -53,7 +53,7 @@ export function UserCreateForm({ action }: UserCreateFormProps) {
       </Field>
 
       {/* Password */}
-      <Field htmlFor="user-password" label={tr("admin.users.password")} required layout="stacked" error={passwordError}>
+      <Field htmlFor="user-password" label={tr("admin.users.password")} required layout="stacked" error={passwordError ? tr(passwordError) : null}>
         <TextInput
           id="user-password"
           type="password"

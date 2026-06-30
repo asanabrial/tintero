@@ -47,17 +47,17 @@ export async function importAction(
   const session = await verifySession();
 
   if (!can(session.role, "tools:access")) {
-    return { error: "You do not have permission to perform this action." };
+    return { error: "admin.errors.noPermission" };
   }
 
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) {
-    return { error: "No file uploaded" };
+    return { error: "admin.errors.noFile" };
   }
 
   // Size guard BEFORE file.text() to avoid parsing huge payloads
   if (file.size > MAX_BUNDLE_BYTES) {
-    return { error: "File too large (max 10MB)" };
+    return { error: "admin.errors.fileTooLargeImport" };
   }
 
   const text = await file.text();
@@ -118,17 +118,17 @@ export async function wxrImportAction(
     const session = await verifySession();
 
     if (!can(session.role, "tools:access")) {
-      return { error: "You do not have permission to perform this action." };
+      return { error: "admin.errors.noPermission" };
     }
 
     const file = formData.get("wxr-file");
     if (!(file instanceof File) || file.size === 0) {
-      return { error: "No file uploaded" };
+      return { error: "admin.errors.noFile" };
     }
 
     // Size guard BEFORE file.text() to avoid parsing huge payloads
     if (file.size > MAX_WXR_BYTES) {
-      return { error: "File too large (max 50MB)" };
+      return { error: "admin.errors.fileTooLargeWxr" };
     }
 
     const xml = await file.text();

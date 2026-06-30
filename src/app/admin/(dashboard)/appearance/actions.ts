@@ -30,7 +30,7 @@ export async function updateAppearanceAction(
   const session = await verifySession();
 
   if (!can(session.role, "appearance:manage")) {
-    return { error: "You do not have permission to perform this action." };
+    return { error: "admin.errors.noPermission" };
   }
 
   const str = (k: string) =>

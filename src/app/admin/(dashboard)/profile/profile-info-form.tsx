@@ -21,7 +21,7 @@ export function ProfileInfoForm({ action, defaultName, defaultBio }: ProfileInfo
 
   return (
     <form action={dispatch} noValidate className="space-y-4">
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
 
       <Field htmlFor="profile-display-name" label={<>{tr("admin.profile.displayName")} <span className="text-zinc-400 font-normal">{tr("common.fieldOptional")}</span></>} layout="stacked">
         <TextInput

@@ -19,9 +19,9 @@ export function TagCreateForm({ action }: TagCreateFormProps) {
 
   return (
     <form action={dispatch} noValidate className="max-w-xl space-y-4">
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
 
-      <Field htmlFor="tag-label" label={tr("admin.taxonomy.labelField")} required layout="stacked" error={labelError}>
+      <Field htmlFor="tag-label" label={tr("admin.taxonomy.labelField")} required layout="stacked" error={labelError ? tr(labelError) : null}>
         <TextInput
           id="tag-label"
           type="text"

@@ -36,7 +36,7 @@ export function QuickDraftForm({ action }: QuickDraftFormProps) {
       </div>
 
       <form action={dispatch} className="p-4 space-y-3">
-        {state?.error && <FormAlert>{state.error}</FormAlert>}
+        {state?.error && <FormAlert>{tr(state.error)}</FormAlert>}
 
         <Field htmlFor="quick-draft-title" label={tr("admin.quickDraft.draftTitle")} required layout="stacked">
           <TextInput

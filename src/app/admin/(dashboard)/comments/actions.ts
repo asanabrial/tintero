@@ -187,12 +187,12 @@ export async function editCommentAction(
   try {
     const updated = await getCommentRepository().updateBody(commentId, parsed.data.body);
     if (!updated) {
-      return { status: "error", message: "Comment not found." };
+      return { status: "error", message: "admin.errors.commentNotFound" };
     }
     invalidateComments();
     return { status: "success" };
   } catch {
-    return { status: "error", message: "Could not save the edit — please try again." };
+    return { status: "error", message: "admin.errors.commentEditFailed" };
   }
 }
 
@@ -218,10 +218,10 @@ export async function replyToCommentAction(
 
   const body = String(formData.get("body") ?? "").trim();
   if (body.length < 1) {
-    return { status: "error", message: "Reply cannot be empty." };
+    return { status: "error", message: "admin.errors.commentReplyEmpty" };
   }
   if (body.length > 5000) {
-    return { status: "error", message: "Reply is too long (max 5000 characters)." };
+    return { status: "error", message: "admin.errors.commentReplyTooLong" };
   }
 
   try {
@@ -230,7 +230,7 @@ export async function replyToCommentAction(
     if (!parent || parent.status !== "approved" || parent.parentId !== null) {
       return {
         status: "error",
-        message: "You can only reply to an approved top-level comment.",
+        message: "admin.errors.commentReplyToApprovedOnly",
       };
     }
 
@@ -252,7 +252,7 @@ export async function replyToCommentAction(
     // DB unavailable or guard violation between read and submit — friendly state, never crash.
     return {
       status: "error",
-      message: "Could not post the reply — please try again.",
+      message: "admin.errors.commentReplyFailed",
     };
   }
 }

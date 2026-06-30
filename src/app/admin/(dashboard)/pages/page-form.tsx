@@ -95,7 +95,7 @@ export function PageForm({ action, initial, currentSlug, pages, baseUrl }: PageF
       )}
 
       {/* Global error banner */}
-      {state?.error && <FormAlert>{state.error}</FormAlert>}
+      {state?.error && <FormAlert>{tr(state.error)}</FormAlert>}
 
       <EditorLayout
         main={

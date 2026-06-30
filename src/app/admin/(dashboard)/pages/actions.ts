@@ -55,7 +55,7 @@ export async function createPageAction(
   const session = await verifySession();
 
   if (!can(session.role, "pages:create")) {
-    return { error: "You do not have permission to perform this action." };
+    return { error: "admin.errors.noPermission" };
   }
 
   // Resolve author label for revision context — best-effort, DB may be unavailable
@@ -133,7 +133,7 @@ export async function updatePageAction(
   const session = await verifySession();
 
   if (!can(session.role, "pages:edit")) {
-    return { error: "You do not have permission to perform this action." };
+    return { error: "admin.errors.noPermission" };
   }
 
   // Resolve author label for revision context — best-effort, DB may be unavailable
@@ -146,7 +146,7 @@ export async function updatePageAction(
   }
 
   if (!currentSlug) {
-    return { error: "Missing current slug — cannot update." };
+    return { error: "admin.errors.missingSlug" };
   }
 
   const title = (formData.get("title") as string | null) ?? "";

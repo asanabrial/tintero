@@ -19,14 +19,14 @@ export function CategoryCreateForm({ action }: CategoryCreateFormProps) {
 
   return (
     <form action={dispatch} noValidate className="max-w-xl space-y-4">
-      {globalError && <FormAlert>{globalError}</FormAlert>}
+      {globalError && <FormAlert>{tr(globalError)}</FormAlert>}
 
       <Field
         htmlFor="cat-label"
         label={tr("admin.taxonomy.labelField")}
         required
         layout="stacked"
-        error={labelError}
+        error={labelError ? tr(labelError) : null}
         hint={tr("admin.taxonomy.categoryHierarchyHint")}
       >
         <TextInput
