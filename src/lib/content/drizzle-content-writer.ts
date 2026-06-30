@@ -62,6 +62,7 @@ import type { RevisionContext } from "../revisions/types";
 import type { RevisionRepository } from "../revisions/ports";
 import { getRevisionRepository } from "../revisions/factory";
 import { withTransaction, type Executor } from "./db-transaction";
+import { upsertReturningId, upsert, insertIgnore } from "./db-upsert";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DrizzleDb = any;
@@ -141,9 +142,10 @@ export class DrizzleContentWriter implements ContentWriter {
   ): Promise<string> {
     const now = nowEpoch();
     const id = newId();
-    const result: Array<{ id: string }> = await exec
-      .insert(this.schema.terms)
-      .values({
+    return upsertReturningId(
+      exec,
+      this.schema.terms,
+      {
         id,
         taxonomy,
         slug,
@@ -153,13 +155,19 @@ export class DrizzleContentWriter implements ContentWriter {
         count: 0,
         created_at: now,
         updated_at: now,
-      })
-      .onConflictDoUpdate({
-        target: [this.schema.terms.taxonomy, this.schema.terms.slug],
-        set: { label, updated_at: now },
-      })
-      .returning({ id: this.schema.terms.id });
-    return result[0].id;
+      },
+      {
+        conflictTarget: [this.schema.terms.taxonomy, this.schema.terms.slug],
+        updateSet: { label, updated_at: now },
+        idColumn: this.schema.terms.id,
+        // MySQL has no RETURNING: identify the live term row by its natural key
+        // (taxonomy, slug) — the same row the conflict target resolves to.
+        naturalKeyWhere: and(
+          eq(this.schema.terms.taxonomy, taxonomy),
+          eq(this.schema.terms.slug, slug)
+        ),
+      }
+    );
   }
 
   /**
@@ -223,21 +231,23 @@ export class DrizzleContentWriter implements ContentWriter {
       const value = cleaned[field];
       if (value === undefined) continue;
       const id = newId();
-      await exec
-        .insert(this.schema.content_meta)
-        .values({
+      await upsert(
+        exec,
+        this.schema.content_meta,
+        {
           id,
           content_id: contentId,
           meta_key: seoMetaKey(field),
           meta_value: seoMetaValue(value),
-        })
-        .onConflictDoUpdate({
-          target: [
+        },
+        {
+          conflictTarget: [
             this.schema.content_meta.content_id,
             this.schema.content_meta.meta_key,
           ],
-          set: { meta_value: seoMetaValue(value) },
-        });
+          updateSet: { meta_value: seoMetaValue(value) },
+        }
+      );
     }
   }
 
@@ -369,10 +379,12 @@ export class DrizzleContentWriter implements ContentWriter {
       for (const rawTag of parseResult.data.tags) {
         const slug = slugifyTag(rawTag);
         const termId = await this.upsertTerm(tx, "tag", slug, rawTag);
-        await tx
-          .insert(this.schema.term_relationships)
-          .values({ content_id: contentId, term_id: termId })
-          .onConflictDoNothing();
+        await insertIgnore(
+          tx,
+          this.schema.term_relationships,
+          { content_id: contentId, term_id: termId },
+          { selfRefColumn: this.schema.term_relationships.content_id }
+        );
         affectedTermIds.push(termId);
       }
 
@@ -380,10 +392,12 @@ export class DrizzleContentWriter implements ContentWriter {
         const slug = joinSlug(slugifyCategory(rawCat));
         if (!slug) continue;
         const termId = await this.upsertTerm(tx, "category", slug, rawCat);
-        await tx
-          .insert(this.schema.term_relationships)
-          .values({ content_id: contentId, term_id: termId })
-          .onConflictDoNothing();
+        await insertIgnore(
+          tx,
+          this.schema.term_relationships,
+          { content_id: contentId, term_id: termId },
+          { selfRefColumn: this.schema.term_relationships.content_id }
+        );
         affectedTermIds.push(termId);
       }
 
@@ -568,10 +582,12 @@ export class DrizzleContentWriter implements ContentWriter {
       for (const rawTag of parseResult.data.tags) {
         const slug = slugifyTag(rawTag);
         const termId = await this.upsertTerm(tx, "tag", slug, rawTag);
-        await tx
-          .insert(this.schema.term_relationships)
-          .values({ content_id: contentId, term_id: termId })
-          .onConflictDoNothing();
+        await insertIgnore(
+          tx,
+          this.schema.term_relationships,
+          { content_id: contentId, term_id: termId },
+          { selfRefColumn: this.schema.term_relationships.content_id }
+        );
         newTermIds.push(termId);
       }
 
@@ -579,10 +595,12 @@ export class DrizzleContentWriter implements ContentWriter {
         const slug = joinSlug(slugifyCategory(rawCat));
         if (!slug) continue;
         const termId = await this.upsertTerm(tx, "category", slug, rawCat);
-        await tx
-          .insert(this.schema.term_relationships)
-          .values({ content_id: contentId, term_id: termId })
-          .onConflictDoNothing();
+        await insertIgnore(
+          tx,
+          this.schema.term_relationships,
+          { content_id: contentId, term_id: termId },
+          { selfRefColumn: this.schema.term_relationships.content_id }
+        );
         newTermIds.push(termId);
       }
 

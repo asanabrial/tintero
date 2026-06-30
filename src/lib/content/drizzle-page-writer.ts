@@ -64,6 +64,7 @@ import type { RevisionContext } from "../revisions/types";
 import type { RevisionRepository } from "../revisions/ports";
 import { getRevisionRepository } from "../revisions/factory";
 import { withTransaction, type Executor } from "./db-transaction";
+import { upsert } from "./db-upsert";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DrizzleDb = any;
@@ -190,21 +191,23 @@ export class DrizzlePageWriter implements PageWriter {
       const value = cleaned[field];
       if (value === undefined) continue;
       const id = newId();
-      await exec
-        .insert(this.schema.content_meta)
-        .values({
+      await upsert(
+        exec,
+        this.schema.content_meta,
+        {
           id,
           content_id: contentId,
           meta_key: seoMetaKey(field),
           meta_value: seoMetaValue(value),
-        })
-        .onConflictDoUpdate({
-          target: [
+        },
+        {
+          conflictTarget: [
             this.schema.content_meta.content_id,
             this.schema.content_meta.meta_key,
           ],
-          set: { meta_value: seoMetaValue(value) },
-        });
+          updateSet: { meta_value: seoMetaValue(value) },
+        }
+      );
     }
   }
 
