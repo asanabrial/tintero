@@ -2,7 +2,7 @@
  * Unit tests for the dialect-selecting content DB factory.
  *
  * Strategy:
- *   - SQLite path: tested fully using bun:sqlite :memory: (no server needed).
+ *   - SQLite path: tested fully using libSQL (file::memory:?cache=shared, no server needed).
  *   - PostgreSQL path: only the "missing DATABASE_URL" guard is tested; no live
  *     server is required and none is used.
  *   - mysql / mariadb / unknown / missing dialect: each throws the expected error.

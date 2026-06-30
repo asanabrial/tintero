@@ -1,10 +1,10 @@
 /**
  * DrizzleContentAdapter wired into the shared ContentRepository contract suite.
  *
- * Creates a fresh bun:sqlite in-memory database, seeds it with normalized SeedData
+ * Creates a fresh libSQL database, seeds it with normalized SeedData
  * (content rows + term rows + term_relationships), writes a temp config/ directory
  * with site.yaml + taxonomies.yaml, constructs a DrizzleContentAdapter pointing at
- * the in-memory DB and config dir, and tears it down in cleanup.
+ * the DB and config dir, and tears it down in cleanup.
  *
  * To run only this file:
  *   bun test test/lib/content/drizzle-content-repository.contract.test.ts
@@ -13,8 +13,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
 import { eq } from "drizzle-orm";
 import * as schema from "@/lib/content/schema.sqlite";
 import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
@@ -27,6 +25,7 @@ import {
   type SeedData,
   type SeedTaxonomy,
 } from "./content-repository-contract";
+import { makeTestContentDb } from "./make-test-content-db";
 
 // ============================================================
 // DDL — creates tables + indexes matching schema.sqlite.ts
@@ -169,10 +168,8 @@ function buildTaxonomiesYaml(data: SeedData): string {
 // ============================================================
 
 async function makeDrizzleHarness(): Promise<Harness> {
-  // In-memory SQLite database with Drizzle ORM
-  const sqliteDb = new Database(":memory:");
-  sqliteDb.exec(DDL);
-  const db = drizzle(sqliteDb, { schema });
+  // Isolated libSQL database with Drizzle ORM
+  const { db, cleanup: closeDb } = await makeTestContentDb(DDL);
 
   // Temp directory for YAML config files
   const tmpBase = await fs.mkdtemp(
@@ -372,7 +369,7 @@ async function makeDrizzleHarness(): Promise<Harness> {
     },
 
     async cleanup(): Promise<void> {
-      sqliteDb.close();
+      closeDb();
       await fs.rm(tmpBase, { recursive: true, force: true });
     },
   };

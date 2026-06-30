@@ -35,8 +35,8 @@ export type { AuthorEntry } from "./author";
  *   - unset / "fs" / any other value → FsContentWriter (default, unchanged behavior)
  *   - "db"     → DrizzleContentWriter (requires DATABASE_DIALECT + DATABASE_URL/FILE)
  *
- * The DB writer and its transitive dependencies (db-factory.ts → bun:sqlite) are loaded
- * lazily via require() only when CONTENT_STORE="db" is set, keeping bun:sqlite out of
+ * The DB writer and its transitive dependencies (db-factory.ts → the native DB driver) are loaded
+ * lazily via require() only when CONTENT_STORE="db" is set, keeping the native DB driver out of
  * the default module graph for the Next.js/Turbopack build.
  *
  * NOTE: DB-writer revision capture is a known follow-up concern. The revisions callback
@@ -50,7 +50,7 @@ export type { AuthorEntry } from "./author";
  */
 export function getWriter(): ContentWriter {
   if (process.env.CONTENT_STORE === "db") {
-    // Lazy-load to keep bun:sqlite out of the default fs bundle.
+    // Lazy-load to keep the native DB driver out of the default fs bundle.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DrizzleContentWriter } = require("./drizzle-content-writer") as typeof import("./drizzle-content-writer");
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -70,8 +70,8 @@ export function getWriter(): ContentWriter {
  *   - unset / "fs" / any other value → FsPageWriter (default, unchanged behavior)
  *   - "db"     → DrizzlePageWriter (requires DATABASE_DIALECT + DATABASE_URL/FILE)
  *
- * The DB writer and its transitive dependencies (db-factory.ts → bun:sqlite) are loaded
- * lazily via require() only when CONTENT_STORE="db" is set, keeping bun:sqlite out of
+ * The DB writer and its transitive dependencies (db-factory.ts → the native DB driver) are loaded
+ * lazily via require() only when CONTENT_STORE="db" is set, keeping the native DB driver out of
  * the default module graph for the Next.js/Turbopack build.
  *
  * NOTE: DB-writer revision capture is a known follow-up concern. The revisions callback
@@ -84,7 +84,7 @@ export function getWriter(): ContentWriter {
  */
 export function getPageWriter(): PageWriter {
   if (process.env.CONTENT_STORE === "db") {
-    // Lazy-load to keep bun:sqlite out of the default fs bundle.
+    // Lazy-load to keep the native DB driver out of the default fs bundle.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DrizzlePageWriter } = require("./drizzle-page-writer") as typeof import("./drizzle-page-writer");
     // eslint-disable-next-line @typescript-eslint/no-require-imports

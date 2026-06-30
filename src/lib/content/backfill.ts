@@ -50,7 +50,7 @@ export interface BackfillOpts {
    * backfill source (it would attempt to load every row into memory at once).
    */
   source: BackfillSource;
-  /** Drizzle DB instance (bun:sqlite, node-postgres, pglite — all accepted). */
+  /** Drizzle DB instance (libSQL, node-postgres, pglite — all accepted). */
   db: DrizzleDb;
   /** Dialect-appropriate schema bundle (schema.sqlite or schema.pg). */
   schema: DrizzleContentSchema;

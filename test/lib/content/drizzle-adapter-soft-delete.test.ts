@@ -5,7 +5,7 @@
  * deleted_at IS NOT NULL. They FAIL before the deleted_at column and isNull()
  * filter are added to the schema and adapter (the filter simply doesn't exist yet).
  *
- * Run on BOTH bun:sqlite and PGlite to prove cross-dialect correctness.
+ * Run on BOTH libSQL (sqlite) and PGlite to prove cross-dialect correctness.
  *
  * Seeding strategy:
  *   - Rows are inserted via drizzle using the schema objects (which do not have
@@ -19,8 +19,6 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle as drizzlePg } from "drizzle-orm/pglite";
 import * as fs from "node:fs/promises";
@@ -30,6 +28,7 @@ import * as schemaSqlite from "@/lib/content/schema.sqlite";
 import * as schemaPg from "@/lib/content/schema.pg";
 import { DrizzleContentAdapter } from "@/lib/content/drizzle-adapter";
 import { newId, toEpoch, nowEpoch } from "@/lib/content/db-values";
+import { makeTestContentDb } from "./make-test-content-db";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -284,9 +283,7 @@ async function makeSqliteHarness(): Promise<SoftDeleteHarness & {
   insertPage(opts: { id: string; slug: string; status?: "published" | "draft" }): Promise<void>;
 }> {
   const configDir = await makeConfigDir();
-  const sqliteDb = new Database(":memory:");
-  sqliteDb.exec(SQLITE_DDL);
-  const db = drizzle(sqliteDb, { schema: schemaSqlite });
+  const { db, client, cleanup: closeDb } = await makeTestContentDb(SQLITE_DDL);
   const repo = new DrizzleContentAdapter(db, configDir, schemaSqlite);
   const now = nowEpoch();
 
@@ -348,7 +345,7 @@ async function makeSqliteHarness(): Promise<SoftDeleteHarness & {
   }
 
   async function trash(id: string) {
-    sqliteDb.run(
+    await client.execute(
       `UPDATE content SET deleted_at = ${TRASHED_AT} WHERE id = '${id}'`
     );
   }
@@ -377,7 +374,7 @@ async function makeSqliteHarness(): Promise<SoftDeleteHarness & {
   }
 
   async function cleanup() {
-    sqliteDb.close();
+    closeDb();
     await fs.rm(path.dirname(configDir), { recursive: true, force: true });
   }
 
@@ -515,7 +512,7 @@ type HarnessFactory = () => Promise<
 >;
 
 const dialects: Array<{ name: string; factory: HarnessFactory }> = [
-  { name: "bun:sqlite", factory: makeSqliteHarness },
+  { name: "libsql", factory: makeSqliteHarness },
   { name: "pglite", factory: makePgliteHarness },
 ];
 

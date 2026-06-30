@@ -7,7 +7,7 @@
  * PgTable objects (schema.pg.ts) with a PG drizzle driver, matching the
  * real production wiring for DATABASE_DIALECT=postgresql.
  *
- * Key differences from the bun:sqlite harness:
+ * Key differences from the libSQL (sqlite) harness:
  *  - Imports schema.pg.ts (PgTable objects) — NOT schema.sqlite.ts
  *  - Timestamps (published_at, created_at, updated_at) are BIGINT in the DDL,
  *    because millisecond epoch values (~1.7e12) exceed PG INTEGER max (~2.1e9).
@@ -141,7 +141,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_content_meta_content_id_meta_key
 `;
 
 // ============================================================
-// YAML serialisation helpers (identical to bun:sqlite harness)
+// YAML serialisation helpers (identical to libSQL (sqlite) harness)
 // ============================================================
 
 function buildSiteYaml(data: SeedData): string {

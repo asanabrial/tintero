@@ -9,7 +9,16 @@
  *
  * Supported in v1 (§10 #2 of the architecture design):
  *   - postgresql  — node-postgres Pool + drizzle-orm/node-postgres
- *   - sqlite      — bun:sqlite Database + drizzle-orm/bun-sqlite
+ *   - sqlite      — libSQL client + drizzle-orm/libsql
+ *
+ * Why libSQL (not bun:sqlite) for SQLite:
+ *   bun:sqlite (and better-sqlite3) expose a SYNCHRONOUS transaction callback,
+ *   `db.transaction((tx) => T): T`. Async work inside that callback commits
+ *   early — the BEGIN/COMMIT wrap only the synchronous portion. libSQL is the
+ *   one Drizzle SQLite driver with an ASYNC transaction API,
+ *   `db.transaction(async (tx) => T): Promise<T>`, identical to node-postgres.
+ *   That lets writers share ONE unified, atomic `withTransaction` helper with
+ *   zero per-driver branching. See docs/architecture/content-db-and-multi-dialect.md.
  *
  * Not yet supported (deferred to v2 per §4.6):
  *   - mysql / mariadb — throws a clear "not supported in v1" error
@@ -17,15 +26,47 @@
  * Config env vars (§8.1):
  *   - DATABASE_DIALECT  ∈ { postgresql, sqlite, mysql, mariadb }
  *   - DATABASE_URL      — server connection string (postgresql)
- *   - DATABASE_FILE     — file path (sqlite); defaults to ":memory:" when unset
+ *   - DATABASE_FILE     — sqlite location; defaults to in-memory when unset.
+ *     Accepts a plain path ("./content.db"), a libSQL URL ("file:…", "libsql:…",
+ *     "http(s):…", "ws(s):…"), or ":memory:". A plain path is wrapped as "file:".
  */
 
-import { Database } from "bun:sqlite";
-import { drizzle as drizzleSqlite } from "drizzle-orm/bun-sqlite";
+import { createClient } from "@libsql/client";
+import { drizzle as drizzleSqlite } from "drizzle-orm/libsql";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as pgSchema from "./schema.pg";
 import * as sqliteSchema from "./schema.sqlite";
+
+/**
+ * In-memory libSQL URL.
+ *
+ * A bare ":memory:" is NOT usable with the libSQL local client: it opens a
+ * fresh connection per statement, so a table created on one connection is
+ * invisible to the next ("no such table"). The shared-cache form keeps a single
+ * process-wide in-memory database alive across the client's connections.
+ */
+const LIBSQL_MEMORY_URL = "file::memory:?cache=shared";
+
+/** libSQL URL schemes that must be passed through to createClient verbatim. */
+const LIBSQL_URL_SCHEME = /^(file|libsql|https?|wss?):/i;
+
+/**
+ * Translate the DATABASE_FILE env var into a libSQL connection URL.
+ *
+ * - unset / "" / ":memory:" → shared in-memory database
+ * - already a libSQL URL (file:, libsql:, http(s):, ws(s):) → passed through
+ * - any other value (a filesystem path) → wrapped as a "file:" URL
+ */
+function resolveLibsqlUrl(databaseFile: string | undefined): string {
+  if (!databaseFile || databaseFile === ":memory:") {
+    return LIBSQL_MEMORY_URL;
+  }
+  if (LIBSQL_URL_SCHEME.test(databaseFile)) {
+    return databaseFile;
+  }
+  return `file:${databaseFile}`;
+}
 
 // The project convention for the drizzle boundary type — the two dialect
 // instances have different concrete types; we expose `any` here just like
@@ -72,9 +113,9 @@ export function getContentDb(): DrizzleDb {
     }
 
     case "sqlite": {
-      const databaseFile = process.env.DATABASE_FILE;
-      const sqliteDb = new Database(databaseFile || ":memory:");
-      contentDb = drizzleSqlite(sqliteDb, { schema: sqliteSchema });
+      const url = resolveLibsqlUrl(process.env.DATABASE_FILE);
+      const client = createClient({ url });
+      contentDb = drizzleSqlite(client, { schema: sqliteSchema });
       return contentDb;
     }
 
