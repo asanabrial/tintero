@@ -29,12 +29,12 @@
  *     "http(s):…", "ws(s):…"), or ":memory:". A plain path is wrapped as "file:".
  */
 
-import { createClient } from "@libsql/client";
-import { drizzle as drizzleSqlite } from "drizzle-orm/libsql";
-import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
-import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
-import { createPool } from "mysql2/promise";
-import { Pool } from "pg";
+// NOTE: the native DB drivers (@libsql/client, mysql2, pg) and their drizzle
+// bindings are require()'d lazily inside each dialect branch — NOT imported at
+// the top level. Eager top-level imports load ALL three drivers on any access,
+// so a single driver that fails to evaluate (e.g. native bindings under the
+// Next.js/Turbopack server runtime) breaks every dialect, including the one in
+// use. Per-branch loading means postgres mode only ever loads pg, etc.
 import * as mysqlSchema from "./schema.mysql";
 import * as pgSchema from "./schema.pg";
 import * as sqliteSchema from "./schema.sqlite";
@@ -108,12 +108,20 @@ export function getContentDb(): DrizzleDb {
           "DATABASE_URL is not set — copy .env.example to .env.local and point it at a Postgres instance"
         );
       }
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { Pool } = require("pg");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { drizzle: drizzlePg } = require("drizzle-orm/node-postgres");
       const pool = new Pool({ connectionString: databaseUrl });
       contentDb = drizzlePg(pool, { schema: pgSchema });
       return contentDb;
     }
 
     case "sqlite": {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { createClient } = require("@libsql/client");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { drizzle: drizzleSqlite } = require("drizzle-orm/libsql");
       const url = resolveLibsqlUrl(process.env.DATABASE_FILE);
       const client = createClient({ url });
       contentDb = drizzleSqlite(client, { schema: sqliteSchema });
@@ -131,6 +139,10 @@ export function getContentDb(): DrizzleDb {
       // createPool is lazy — it does not open a connection until the first query,
       // so construction succeeds without a live server. mysql2/promise yields the
       // promise-based pool drizzle-orm/mysql2 expects.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { createPool } = require("mysql2/promise");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { drizzle: drizzleMysql } = require("drizzle-orm/mysql2");
       const pool = createPool(databaseUrl);
       contentDb = drizzleMysql(pool, { schema: mysqlSchema, mode: "default" });
       return contentDb;

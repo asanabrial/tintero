@@ -4,6 +4,9 @@
 import * as path from "path";
 import { FsContentWriter } from "./fs-writer";
 import { FsPageWriter } from "./fs-page-writer";
+import { DrizzleContentWriter } from "./drizzle-content-writer";
+import { DrizzlePageWriter } from "./drizzle-page-writer";
+import { getContentDb, getContentSchema } from "./db-factory";
 import { getRevisionRepository } from "../revisions/factory";
 import type { ContentWriter, PageWriter } from "./ports";
 
@@ -50,11 +53,8 @@ export type { AuthorEntry } from "./author";
  */
 export function getWriter(): ContentWriter {
   if (process.env.CONTENT_STORE === "db") {
-    // Lazy-load to keep the native DB driver out of the default fs bundle.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { DrizzleContentWriter } = require("./drizzle-content-writer") as typeof import("./drizzle-content-writer");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
+    // Native drivers stay out of the default graph via next.config
+    // serverExternalPackages + db-factory's per-dialect lazy require().
     return new DrizzleContentWriter(getContentDb(), getContentSchema(), () => getRevisionRepository());
   }
   return new FsContentWriter(
@@ -84,11 +84,8 @@ export function getWriter(): ContentWriter {
  */
 export function getPageWriter(): PageWriter {
   if (process.env.CONTENT_STORE === "db") {
-    // Lazy-load to keep the native DB driver out of the default fs bundle.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { DrizzlePageWriter } = require("./drizzle-page-writer") as typeof import("./drizzle-page-writer");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
+    // Native drivers stay out of the default graph via next.config
+    // serverExternalPackages + db-factory's per-dialect lazy require().
     return new DrizzlePageWriter(getContentDb(), getContentSchema(), () => getRevisionRepository());
   }
   return new FsPageWriter(
