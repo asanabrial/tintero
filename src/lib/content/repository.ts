@@ -14,6 +14,9 @@ import * as path from "path";
 import { cacheLife } from "next/cache";
 import { cacheTag } from "next/cache";
 import { FilesystemContentAdapter } from "./fs-adapter";
+import { DrizzleContentAdapter } from "./drizzle-adapter";
+import { ShadowContentAdapter } from "./shadow-adapter";
+import { getContentDb, getContentSchema } from "./db-factory";
 import { postsFingerprint, pagesFingerprint, siteConfigFingerprint, taxonomiesFingerprint } from "./fingerprint";
 import type { ContentRepository, ListPostsOptions, ListPostsResult, ListPagesOptions, ListPagesResult, StatusCounts } from "./ports";
 import type { LinkGraph, UnlinkedMention } from "./links";
@@ -44,20 +47,10 @@ let _adapter: ContentRepository | null = null;
 export function getAdapter(): ContentRepository {
   if (!_adapter) {
     if (process.env.CONTENT_STORE === "db") {
-      // Lazy-load to keep the native DB driver out of the default fs bundle.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { DrizzleContentAdapter } = require("./drizzle-adapter") as typeof import("./drizzle-adapter");
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
+      // Native drivers stay out of the default graph via next.config
+      // serverExternalPackages + db-factory's per-dialect lazy require().
       _adapter = new DrizzleContentAdapter(getContentDb(), CONFIG_ROOT, getContentSchema());
     } else if (process.env.CONTENT_STORE === "shadow") {
-      // Lazy-load DB pieces to keep the native DB driver out of the default fs bundle.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { DrizzleContentAdapter } = require("./drizzle-adapter") as typeof import("./drizzle-adapter");
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { getContentDb, getContentSchema } = require("./db-factory") as typeof import("./db-factory");
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { ShadowContentAdapter } = require("./shadow-adapter") as typeof import("./shadow-adapter");
       const primary = new FilesystemContentAdapter(CONTENT_ROOT);
       const secondary = new DrizzleContentAdapter(getContentDb(), CONFIG_ROOT, getContentSchema());
       _adapter = new ShadowContentAdapter(primary, secondary);
