@@ -5,7 +5,11 @@
  *   - SQLite path: tested fully using libSQL (file::memory:?cache=shared, no server needed).
  *   - PostgreSQL path: only the "missing DATABASE_URL" guard is tested; no live
  *     server is required and none is used.
- *   - mysql / mariadb / unknown / missing dialect: each throws the expected error.
+ *   - MySQL / MariaDB paths: construction is tested with a dummy DATABASE_URL.
+ *     mysql2 createPool is lazy (does not connect until first query), so a real
+ *     drizzle instance is produced with no live server. The missing-DATABASE_URL
+ *     guard is tested too. No query is ever run.
+ *   - unknown / missing dialect: each throws the expected error.
  *
  * Each test case manipulates process.env and calls __resetForTests() to ensure
  * singleton isolation.
@@ -106,20 +110,53 @@ describe("postgresql dialect — missing DATABASE_URL guard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Unsupported dialects (v1 scope: Postgres + SQLite only)
+// MySQL path — construction (lazy pool, no live server) + guard
 // ---------------------------------------------------------------------------
 
-describe("mysql dialect — not supported in v1", () => {
-  test("throws a 'not supported in v1' error", () => {
+// A dummy URL is enough: mysql2 createPool is lazy and never connects until the
+// first query, which these tests never run.
+const DUMMY_MYSQL_URL = "mysql://user:pass@localhost:3306/db";
+
+describe("mysql dialect — construction (lazy pool, no live server)", () => {
+  test("returns a drizzle instance when DATABASE_DIALECT=mysql and DATABASE_URL is set", () => {
     process.env.DATABASE_DIALECT = "mysql";
-    expect(() => getContentDb()).toThrow("not supported in v1");
+    process.env.DATABASE_URL = DUMMY_MYSQL_URL;
+    const db = getContentDb();
+    expect(db).not.toBeNull();
+    expect(db).not.toBeUndefined();
+    // A real drizzle instance exposes query builder methods
+    expect(typeof db.select).toBe("function");
+    expect(typeof db.insert).toBe("function");
+  });
+
+  test("second call returns the SAME instance (singleton)", () => {
+    process.env.DATABASE_DIALECT = "mysql";
+    process.env.DATABASE_URL = DUMMY_MYSQL_URL;
+    const first = getContentDb();
+    const second = getContentDb();
+    expect(second).toBe(first);
+  });
+
+  test("throws with DATABASE_URL in the message when DATABASE_URL is not set", () => {
+    process.env.DATABASE_DIALECT = "mysql";
+    // DATABASE_URL is intentionally not set (cleaned in beforeEach)
+    expect(() => getContentDb()).toThrow("DATABASE_URL");
   });
 });
 
-describe("mariadb dialect — not supported in v1", () => {
-  test("throws a 'not supported in v1' error", () => {
+describe("mariadb dialect — construction (lazy pool, no live server)", () => {
+  test("returns a drizzle instance when DATABASE_DIALECT=mariadb and DATABASE_URL is set", () => {
     process.env.DATABASE_DIALECT = "mariadb";
-    expect(() => getContentDb()).toThrow("not supported in v1");
+    process.env.DATABASE_URL = DUMMY_MYSQL_URL;
+    const db = getContentDb();
+    expect(db).not.toBeNull();
+    expect(typeof db.select).toBe("function");
+    expect(typeof db.insert).toBe("function");
+  });
+
+  test("throws with DATABASE_URL in the message when DATABASE_URL is not set", () => {
+    process.env.DATABASE_DIALECT = "mariadb";
+    expect(() => getContentDb()).toThrow("DATABASE_URL");
   });
 });
 

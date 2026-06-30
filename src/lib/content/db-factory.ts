@@ -7,9 +7,10 @@
  *   - The drizzle instance is memoised on the first successful call and reused
  *     for all subsequent calls.
  *
- * Supported in v1 (§10 #2 of the architecture design):
- *   - postgresql  — node-postgres Pool + drizzle-orm/node-postgres
- *   - sqlite      — libSQL client + drizzle-orm/libsql
+ * Supported dialects (§10 #2 of the architecture design):
+ *   - postgresql      — node-postgres Pool + drizzle-orm/node-postgres
+ *   - sqlite          — libSQL client + drizzle-orm/libsql
+ *   - mysql / mariadb — mysql2 Pool + drizzle-orm/mysql2 (shared schema.mysql)
  *
  * Why libSQL (not bun:sqlite) for SQLite:
  *   bun:sqlite (and better-sqlite3) expose a SYNCHRONOUS transaction callback,
@@ -20,12 +21,9 @@
  *   That lets writers share ONE unified, atomic `withTransaction` helper with
  *   zero per-driver branching. See docs/architecture/content-db-and-multi-dialect.md.
  *
- * Not yet supported (deferred to v2 per §4.6):
- *   - mysql / mariadb — throws a clear "not supported in v1" error
- *
  * Config env vars (§8.1):
  *   - DATABASE_DIALECT  ∈ { postgresql, sqlite, mysql, mariadb }
- *   - DATABASE_URL      — server connection string (postgresql)
+ *   - DATABASE_URL      — server connection string (postgresql, mysql, mariadb)
  *   - DATABASE_FILE     — sqlite location; defaults to in-memory when unset.
  *     Accepts a plain path ("./content.db"), a libSQL URL ("file:…", "libsql:…",
  *     "http(s):…", "ws(s):…"), or ":memory:". A plain path is wrapped as "file:".
@@ -33,8 +31,11 @@
 
 import { createClient } from "@libsql/client";
 import { drizzle as drizzleSqlite } from "drizzle-orm/libsql";
+import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
+import { createPool } from "mysql2/promise";
 import { Pool } from "pg";
+import * as mysqlSchema from "./schema.mysql";
 import * as pgSchema from "./schema.pg";
 import * as sqliteSchema from "./schema.sqlite";
 
@@ -95,7 +96,7 @@ export function getContentDb(): DrizzleDb {
 
   if (!dialect) {
     throw new Error(
-      "DATABASE_DIALECT is not set — must be one of: postgresql, sqlite"
+      "DATABASE_DIALECT is not set — must be one of: postgresql, sqlite, mysql, mariadb"
     );
   }
 
@@ -121,14 +122,23 @@ export function getContentDb(): DrizzleDb {
 
     case "mysql":
     case "mariadb": {
-      throw new Error(
-        `${dialect} is not supported in v1 (Postgres + SQLite only)`
-      );
+      const databaseUrl = process.env.DATABASE_URL;
+      if (!databaseUrl) {
+        throw new Error(
+          "DATABASE_URL is not set — copy .env.example to .env.local and point it at a MySQL/MariaDB instance"
+        );
+      }
+      // createPool is lazy — it does not open a connection until the first query,
+      // so construction succeeds without a live server. mysql2/promise yields the
+      // promise-based pool drizzle-orm/mysql2 expects.
+      const pool = createPool(databaseUrl);
+      contentDb = drizzleMysql(pool, { schema: mysqlSchema, mode: "default" });
+      return contentDb;
     }
 
     default: {
       throw new Error(
-        `Unknown DATABASE_DIALECT "${dialect}" — must be one of: postgresql, sqlite`
+        `Unknown DATABASE_DIALECT "${dialect}" — must be one of: postgresql, sqlite, mysql, mariadb`
       );
     }
   }
@@ -142,11 +152,17 @@ export function getContentDb(): DrizzleDb {
  * hard-coding the dialect at its import boundary. Must be called with the same
  * DATABASE_DIALECT as getContentDb().
  */
-export function getContentSchema(): typeof pgSchema | typeof sqliteSchema {
+export function getContentSchema():
+  | typeof pgSchema
+  | typeof sqliteSchema
+  | typeof mysqlSchema {
   const dialect = process.env.DATABASE_DIALECT as Dialect | undefined;
   switch (dialect) {
     case "postgresql":
       return pgSchema;
+    case "mysql":
+    case "mariadb":
+      return mysqlSchema;
     case "sqlite":
     default:
       return sqliteSchema;
