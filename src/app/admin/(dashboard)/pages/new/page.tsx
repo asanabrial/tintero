@@ -29,7 +29,9 @@ async function NewPageContent() {
   return (
     <PageForm
       action={createPageAction}
-      initial={{ date: defaultDate }}
+      // A brand-new page starts as a draft (WordPress page model) — published
+      // only when the author clicks Publish.
+      initial={{ date: defaultDate, status: "draft" }}
       pages={pageList}
       baseUrl={config.baseUrl}
     />
